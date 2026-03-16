@@ -1,0 +1,173 @@
+import React, { useState } from 'react';
+import { X, User, Phone, Mail, BookOpen } from 'lucide-react';
+import { Teacher } from '../types';
+
+interface TeacherFormProps {
+  teacher?: Teacher;
+  onClose: () => void;
+  onSave: (data: Partial<Teacher>) => Promise<void>;
+}
+
+const specializations = ['Piano', 'Violin', 'Guitar', 'Voice', 'Music Theory', 'Drums', 'Flute'];
+
+export default function TeacherForm({ teacher, onClose, onSave }: TeacherFormProps) {
+  const [formData, setFormData] = useState({
+    name: teacher?.name || '',
+    phone: teacher?.phone || '',
+    email: teacher?.email || '',
+    specialization: teacher?.specialization || 'Piano',
+    status: teacher?.status || 'active',
+  });
+  const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const validate = () => {
+    const newErrors: Record<string, string> = {};
+    if (!formData.name.trim()) newErrors.name = '请输入教师姓名';
+    if (formData.phone && !/^[\d\-]+$/.test(formData.phone)) newErrors.phone = '电话格式不正确';
+    if (formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      newErrors.email = '邮箱格式不正确';
+    }
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validate()) return;
+
+    setLoading(true);
+    try {
+      await onSave(formData);
+      onClose();
+    } catch (error) {
+      setErrors({ submit: '保存失败，请重试' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 animate-fade-in">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md animate-scale-in">
+        <div className="flex items-center justify-between p-4 border-b border-gray-100">
+          <h2 className="text-lg font-bold text-gray-900">
+            {teacher ? '编辑教师' : '添加教师'}
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-lg hover:bg-gray-100 transition text-gray-400 hover:text-gray-600"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+          {errors.submit && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">
+              {errors.submit}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              <User className="w-4 h-4 inline mr-1" />
+              教师姓名 *
+            </label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={e => setFormData({ ...formData, name: e.target.value })}
+              className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                errors.name ? 'border-red-300' : 'border-gray-200'
+              }`}
+              placeholder="请输入教师姓名"
+            />
+            {errors.name && <p className="text-xs text-red-500 mt-1">{errors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              <Phone className="w-4 h-4 inline mr-1" />
+              联系电话
+            </label>
+            <input
+              type="tel"
+              value={formData.phone}
+              onChange={e => setFormData({ ...formData, phone: e.target.value })}
+              className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                errors.phone ? 'border-red-300' : 'border-gray-200'
+              }`}
+              placeholder="例如: 138-0013-8000"
+            />
+            {errors.phone && <p className="text-xs text-red-500 mt-1">{errors.phone}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              <Mail className="w-4 h-4 inline mr-1" />
+              电子邮箱
+            </label>
+            <input
+              type="email"
+              value={formData.email}
+              onChange={e => setFormData({ ...formData, email: e.target.value })}
+              className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                errors.email ? 'border-red-300' : 'border-gray-200'
+              }`}
+              placeholder="例如: teacher@pianoedu.com"
+            />
+            {errors.email && <p className="text-xs text-red-500 mt-1">{errors.email}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              <BookOpen className="w-4 h-4 inline mr-1" />
+              专业方向
+            </label>
+            <select
+              value={formData.specialization}
+              onChange={e => setFormData({ ...formData, specialization: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {specializations.map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+
+          {teacher && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">状态</label>
+              <select
+                value={formData.status}
+                onChange={e => setFormData({ ...formData, status: e.target.value as 'active' | 'inactive' })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="active">在职</option>
+                <option value="inactive">离职</option>
+              </select>
+            </div>
+          )}
+
+          <div className="flex justify-end space-x-3 pt-4 border-t border-gray-100">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? '保存中...' : '保存'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

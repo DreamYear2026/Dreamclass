@@ -1,0 +1,703 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { TrendingUp, TrendingDown, Users, DollarSign, Calendar, Clock, Award, Target, PieChart, BarChart3, Loader2, Download, FileSpreadsheet, FileText } from 'lucide-react';
+import { Language } from '../types';
+import { useTranslation } from '../i18n';
+import { useStudents, useCourses, useTeachers } from '../contexts/AppContext';
+import { useToast } from './Toast';
+import { parseISO, format, isThisMonth, isThisYear, subMonths, eachMonthOfInterval, differenceInMonths, startOfMonth, endOfMonth } from 'date-fns';
+import { zhCN } from 'date-fns/locale';
+import { exportToExcel, exportToPDF, exportReportToPDF, exportMultipleSheetsToExcel } from '../utils/export';
+
+interface AnalyticsData {
+  studentRetention: { month: string; rate: number; newStudents: number; leftStudents: number }[];
+  courseConsumption: { month: string; total: number; average: number }[];
+  teacherPerformance: { id: string; name: string; courses: number; rating: number; hours: number }[];
+  revenueForecast: { month: string; actual: number; forecast: number }[];
+  conversionFunnel: { stage: string; count: number; rate: number }[];
+}
+
+export default function AnalyticsPage({ lang }: { lang: Language }) {
+  const { t } = useTranslation(lang);
+  const { students, loading: studentsLoading } = useStudents();
+  const { courses, loading: coursesLoading } = useCourses();
+  const { teachers, loading: teachersLoading } = useTeachers();
+  const { showToast } = useToast();
+
+  const [payments, setPayments] = useState<any[]>([]);
+  const [leads, setLeads] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'teachers' | 'finance'>('overview');
+
+  useEffect(() => {
+    fetchAnalyticsData();
+  }, []);
+
+  const fetchAnalyticsData = async () => {
+    try {
+      setLoading(true);
+      const [paymentsRes, leadsRes] = await Promise.all([
+        fetch('/api/payments', { credentials: 'include' }),
+        fetch('/api/leads', { credentials: 'include' }),
+      ]);
+      
+      if (paymentsRes.ok) setPayments(await paymentsRes.json());
+      if (leadsRes.ok) setLeads(await leadsRes.json());
+    } catch (error) {
+      console.error('Failed to fetch analytics data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const allLoading = studentsLoading || coursesLoading || teachersLoading || loading;
+
+  const monthlyData = useMemo(() => {
+    const months = eachMonthOfInterval({
+      start: subMonths(new Date(), 11),
+      end: new Date(),
+    });
+
+    return months.map(month => {
+      const monthStart = startOfMonth(month);
+      const monthEnd = endOfMonth(month);
+      
+      const monthCourses = courses.filter(c => {
+        const courseDate = parseISO(c.date);
+        return courseDate >= monthStart && courseDate <= monthEnd;
+      });
+
+      const monthPayments = payments.filter(p => {
+        const paymentDate = parseISO(p.date);
+        return paymentDate >= monthStart && paymentDate <= monthEnd;
+      });
+
+      const completedCourses = monthCourses.filter(c => c.status === 'completed');
+      const income = monthPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
+      const expense = monthPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
+
+      return {
+        month: format(month, lang === 'zh' ? 'M月' : 'MMM'),
+        monthFull: format(month, lang === 'zh' ? 'yyyy年M月' : 'MMMM yyyy'),
+        courses: monthCourses.length,
+        completedCourses: completedCourses.length,
+        income,
+        expense,
+        profit: income - expense,
+        hours: completedCourses.length,
+      };
+    });
+  }, [courses, payments, lang]);
+
+  const studentAnalytics = useMemo(() => {
+    const activeStudents = students.filter(s => s.remainingHours > 0);
+    const lowHoursStudents = students.filter(s => s.remainingHours < 5 && s.remainingHours > 0);
+    const zeroHoursStudents = students.filter(s => s.remainingHours === 0);
+
+    const totalHours = students.reduce((sum, s) => sum + s.remainingHours, 0);
+    const avgHours = students.length > 0 ? totalHours / students.length : 0;
+
+    const retentionRate = students.length > 0 
+      ? ((activeStudents.length / students.length) * 100).toFixed(1)
+      : 0;
+
+    return {
+      total: students.length,
+      active: activeStudents.length,
+      lowHours: lowHoursStudents.length,
+      zeroHours: zeroHoursStudents.length,
+      totalHours,
+      avgHours: avgHours.toFixed(1),
+      retentionRate,
+    };
+  }, [students]);
+
+  const teacherAnalytics = useMemo(() => {
+    const thisMonthCourses = courses.filter(c => isThisMonth(parseISO(c.date)));
+    
+    return teachers.map(teacher => {
+      const teacherCourses = thisMonthCourses.filter(c => c.teacherId === teacher.id);
+      const completedCourses = teacherCourses.filter(c => c.status === 'completed');
+      
+      return {
+        id: teacher.id,
+        name: teacher.name,
+        courses: teacherCourses.length,
+        completedCourses: completedCourses.length,
+        hours: completedCourses.length,
+        status: teacher.status,
+      };
+    }).sort((a, b) => b.courses - a.courses);
+  }, [teachers, courses]);
+
+  const financialAnalytics = useMemo(() => {
+    const thisMonthPayments = payments.filter(p => isThisMonth(parseISO(p.date)));
+    const thisYearPayments = payments.filter(p => isThisYear(parseISO(p.date)));
+
+    const monthIncome = thisMonthPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
+    const monthExpense = thisMonthPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
+    const yearIncome = thisYearPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
+    const yearExpense = thisYearPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
+
+    const avgMonthIncome = monthlyData.reduce((sum, m) => sum + m.income, 0) / Math.max(monthlyData.length, 1);
+    const forecastNextMonth = avgMonthIncome * 1.05;
+
+    return {
+      monthIncome,
+      monthExpense,
+      monthProfit: monthIncome - monthExpense,
+      yearIncome,
+      yearExpense,
+      yearProfit: yearIncome - yearExpense,
+      forecastNextMonth,
+      profitRate: monthIncome > 0 ? (((monthIncome - monthExpense) / monthIncome) * 100).toFixed(1) : 0,
+    };
+  }, [payments, monthlyData]);
+
+  const conversionFunnel = useMemo(() => {
+    const total = leads.length;
+    const newLeads = leads.filter(l => l.status === 'new').length;
+    const contacted = leads.filter(l => l.status === 'contacted').length;
+    const trial = leads.filter(l => l.status === 'trial').length;
+    const converted = leads.filter(l => l.status === 'converted').length;
+    const lost = leads.filter(l => l.status === 'lost').length;
+
+    return [
+      { stage: lang === 'zh' ? '总线索' : 'Total Leads', count: total, rate: 100 },
+      { stage: lang === 'zh' ? '已联系' : 'Contacted', count: contacted + trial + converted, rate: total > 0 ? (((contacted + trial + converted) / total) * 100).toFixed(1) : 0 },
+      { stage: lang === 'zh' ? '试听课' : 'Trial', count: trial + converted, rate: total > 0 ? (((trial + converted) / total) * 100).toFixed(1) : 0 },
+      { stage: lang === 'zh' ? '已转化' : 'Converted', count: converted, rate: total > 0 ? ((converted / total) * 100).toFixed(1) : 0 },
+    ];
+  }, [leads, lang]);
+
+  const handleExportExcel = () => {
+    const studentData = students.map(s => ({
+      '学员姓名': s.name,
+      '联系电话': s.parentPhone || '-',
+      '剩余课时': s.remainingHours,
+      '状态': s.remainingHours > 0 ? '活跃' : '待续费',
+    }));
+
+    const teacherData = teacherAnalytics.map(t => ({
+      '教师姓名': t.name,
+      '本月课程': t.courses,
+      '已完成': t.completedCourses,
+      '课时数': t.hours,
+    }));
+
+    const financeData = monthlyData.map(m => ({
+      '月份': m.monthFull,
+      '课程数': m.courses,
+      '已完成': m.completedCourses,
+      '收入': m.income,
+      '支出': m.expense,
+      '利润': m.profit,
+    }));
+
+    exportMultipleSheetsToExcel([
+      { name: '学员统计', data: studentData },
+      { name: '教师绩效', data: teacherData },
+      { name: '财务数据', data: financeData },
+    ], `经营分析报告_${format(new Date(), 'yyyy-MM-dd')}`);
+    
+    showToast(lang === 'zh' ? 'Excel导出成功' : 'Excel exported', 'success');
+  };
+
+  const handleExportPDF = () => {
+    const studentData = students.slice(0, 20).map(s => ({
+      name: s.name,
+      phone: s.parentPhone || '-',
+      hours: String(s.remainingHours),
+      status: s.remainingHours > 0 ? '活跃' : '待续费',
+    }));
+
+    const teacherData = teacherAnalytics.slice(0, 10).map(t => ({
+      name: t.name,
+      courses: String(t.courses),
+      completed: String(t.completedCourses),
+      hours: String(t.hours),
+    }));
+
+    const financeData = monthlyData.map(m => ({
+      month: m.month,
+      courses: String(m.courses),
+      income: `¥${m.income}`,
+      expense: `¥${m.expense}`,
+      profit: `¥${m.profit}`,
+    }));
+
+    exportReportToPDF({
+      title: lang === 'zh' ? '经营分析报告' : 'Business Analytics Report',
+      period: format(new Date(), 'yyyy年M月'),
+      sections: [
+        {
+          title: lang === 'zh' ? '学员统计' : 'Student Statistics',
+          columns: [
+            { header: lang === 'zh' ? '姓名' : 'Name', dataKey: 'name' },
+            { header: lang === 'zh' ? '电话' : 'Phone', dataKey: 'phone' },
+            { header: lang === 'zh' ? '课时' : 'Hours', dataKey: 'hours' },
+            { header: lang === 'zh' ? '状态' : 'Status', dataKey: 'status' },
+          ],
+          data: studentData,
+        },
+        {
+          title: lang === 'zh' ? '教师绩效' : 'Teacher Performance',
+          columns: [
+            { header: lang === 'zh' ? '姓名' : 'Name', dataKey: 'name' },
+            { header: lang === 'zh' ? '课程数' : 'Courses', dataKey: 'courses' },
+            { header: lang === 'zh' ? '已完成' : 'Completed', dataKey: 'completed' },
+            { header: lang === 'zh' ? '课时' : 'Hours', dataKey: 'hours' },
+          ],
+          data: teacherData,
+        },
+        {
+          title: lang === 'zh' ? '财务数据' : 'Financial Data',
+          columns: [
+            { header: lang === 'zh' ? '月份' : 'Month', dataKey: 'month' },
+            { header: lang === 'zh' ? '课程数' : 'Courses', dataKey: 'courses' },
+            { header: lang === 'zh' ? '收入' : 'Income', dataKey: 'income' },
+            { header: lang === 'zh' ? '支出' : 'Expense', dataKey: 'expense' },
+            { header: lang === 'zh' ? '利润' : 'Profit', dataKey: 'profit' },
+          ],
+          data: financeData,
+        },
+      ],
+      filename: `经营分析报告_${format(new Date(), 'yyyy-MM-dd')}`,
+    });
+    
+    showToast(lang === 'zh' ? 'PDF导出成功' : 'PDF exported', 'success');
+  };
+
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  if (allLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-[60vh]">
+        <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6 pb-24">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold text-gray-900">
+          {lang === 'zh' ? '经营分析' : 'Analytics'}
+        </h1>
+        <div className="relative">
+          <button
+            onClick={() => setShowExportMenu(!showExportMenu)}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition flex items-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            {lang === 'zh' ? '导出报告' : 'Export'}
+          </button>
+          
+          {showExportMenu && (
+            <>
+              <div 
+                className="fixed inset-0 z-10" 
+                onClick={() => setShowExportMenu(false)}
+              />
+              <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-gray-100 py-2 z-20">
+                <button
+                  onClick={() => {
+                    handleExportExcel();
+                    setShowExportMenu(false);
+                  }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-green-600" />
+                  {lang === 'zh' ? '导出 Excel' : 'Export Excel'}
+                </button>
+                <button
+                  onClick={() => {
+                    handleExportPDF();
+                    setShowExportMenu(false);
+                  }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3"
+                >
+                  <FileText className="w-4 h-4 text-red-600" />
+                  {lang === 'zh' ? '导出 PDF' : 'Export PDF'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-2">
+        {[
+          { id: 'overview', label: lang === 'zh' ? '总览' : 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
+          { id: 'students', label: lang === 'zh' ? '学员分析' : 'Students', icon: <Users className="w-4 h-4" /> },
+          { id: 'teachers', label: lang === 'zh' ? '教师分析' : 'Teachers', icon: <Award className="w-4 h-4" /> },
+          { id: 'finance', label: lang === 'zh' ? '财务分析' : 'Finance', icon: <DollarSign className="w-4 h-4" /> },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id as any)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition flex items-center gap-2 ${
+              activeTab === tab.id
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center">
+                  <Users className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">{studentAnalytics.total}</p>
+                  <p className="text-xs text-gray-500">{lang === 'zh' ? '学员总数' : 'Total Students'}</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center">
+                  <TrendingUp className="w-5 h-5 text-green-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">{studentAnalytics.retentionRate}%</p>
+                  <p className="text-xs text-gray-500">{lang === 'zh' ? '留存率' : 'Retention'}</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                  <DollarSign className="w-5 h-5 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">¥{financialAnalytics.monthIncome.toLocaleString()}</p>
+                  <p className="text-xs text-gray-500">{lang === 'zh' ? '本月收入' : 'Month Income'}</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center">
+                  <Target className="w-5 h-5 text-purple-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">{conversionFunnel[3].rate}%</p>
+                  <p className="text-xs text-gray-500">{lang === 'zh' ? '转化率' : 'Conversion'}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-indigo-600" />
+                {lang === 'zh' ? '收入趋势' : 'Revenue Trend'}
+              </h3>
+              <div className="flex items-end gap-2 h-32">
+                {monthlyData.map((data, i) => {
+                  const maxIncome = Math.max(...monthlyData.map(d => d.income), 1);
+                  const height = (data.income / maxIncome) * 100;
+                  
+                  return (
+                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                      <div 
+                        className="w-full bg-gradient-to-t from-indigo-500 to-purple-400 rounded-t transition-all"
+                        style={{ height: `${Math.max(height, 2)}%` }}
+                      />
+                      <span className="text-xs text-gray-500">{data.month}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <Target className="w-5 h-5 text-purple-600" />
+                {lang === 'zh' ? '转化漏斗' : 'Conversion Funnel'}
+              </h3>
+              <div className="space-y-3">
+                {conversionFunnel.map((stage, i) => (
+                  <div key={i}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm text-gray-600">{stage.stage}</span>
+                      <span className="text-sm font-medium text-gray-900">{stage.count} ({stage.rate}%)</span>
+                    </div>
+                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 rounded-full transition-all"
+                        style={{ width: `${stage.rate}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-green-600" />
+              {lang === 'zh' ? '课程消耗趋势' : 'Course Consumption'}
+            </h3>
+            <div className="flex items-end gap-2 h-32">
+              {monthlyData.map((data, i) => {
+                const maxCourses = Math.max(...monthlyData.map(d => d.completedCourses), 1);
+                const height = (data.completedCourses / maxCourses) * 100;
+                
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div 
+                      className="w-full bg-gradient-to-t from-green-500 to-emerald-400 rounded-t transition-all"
+                      style={{ height: `${Math.max(height, 2)}%` }}
+                    />
+                    <span className="text-xs text-gray-500">{data.month}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-center gap-6 mt-4 pt-4 border-t border-gray-100">
+              <div className="text-center">
+                <p className="text-lg font-bold text-green-600">
+                  {monthlyData.reduce((sum, m) => sum + m.completedCourses, 0)}
+                </p>
+                <p className="text-xs text-gray-500">{lang === 'zh' ? '年度总课时' : 'Yearly Hours'}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold text-indigo-600">
+                  {(monthlyData.reduce((sum, m) => sum + m.completedCourses, 0) / 12).toFixed(1)}
+                </p>
+                <p className="text-xs text-gray-500">{lang === 'zh' ? '月均课时' : 'Avg/Month'}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'students' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-gray-900">{studentAnalytics.total}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '学员总数' : 'Total'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-green-600">{studentAnalytics.active}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '活跃学员' : 'Active'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-amber-600">{studentAnalytics.lowHours}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '课时不足' : 'Low Hours'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-red-600">{studentAnalytics.zeroHours}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '已耗尽' : 'Zero Hours'}</p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '学员课时分布' : 'Hours Distribution'}</h3>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center p-4 bg-red-50 rounded-xl">
+                <p className="text-2xl font-bold text-red-600">{studentAnalytics.zeroHours}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '0课时' : '0 Hours'}</p>
+              </div>
+              <div className="text-center p-4 bg-amber-50 rounded-xl">
+                <p className="text-2xl font-bold text-amber-600">{studentAnalytics.lowHours}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '1-4课时' : '1-4 Hours'}</p>
+              </div>
+              <div className="text-center p-4 bg-green-50 rounded-xl">
+                <p className="text-2xl font-bold text-green-600">{studentAnalytics.active - studentAnalytics.lowHours}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '5+课时' : '5+ Hours'}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '关键指标' : 'Key Metrics'}</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                <span className="text-gray-600">{lang === 'zh' ? '平均剩余课时' : 'Avg Remaining Hours'}</span>
+                <span className="font-bold text-gray-900">{studentAnalytics.avgHours}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                <span className="text-gray-600">{lang === 'zh' ? '总剩余课时' : 'Total Remaining'}</span>
+                <span className="font-bold text-gray-900">{studentAnalytics.totalHours}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                <span className="text-gray-600">{lang === 'zh' ? '学员留存率' : 'Retention Rate'}</span>
+                <span className="font-bold text-green-600">{studentAnalytics.retentionRate}%</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                <span className="text-gray-600">{lang === 'zh' ? '续费预警' : 'Renewal Alert'}</span>
+                <span className="font-bold text-amber-600">{studentAnalytics.lowHours + studentAnalytics.zeroHours}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'teachers' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-gray-900">{teachers.filter(t => t.status === 'active').length}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '在职教师' : 'Active Teachers'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-indigo-600">
+                {teacherAnalytics.reduce((sum, t) => sum + t.courses, 0)}
+              </p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月课程' : 'Month Courses'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-green-600">
+                {teacherAnalytics.reduce((sum, t) => sum + t.completedCourses, 0)}
+              </p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '已完成' : 'Completed'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-purple-600">
+                {teacherAnalytics.length > 0 
+                  ? (teacherAnalytics.reduce((sum, t) => sum + t.completedCourses, 0) / teacherAnalytics.length).toFixed(1)
+                  : 0}
+              </p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '人均课时' : 'Avg/Teacher'}</p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '教师绩效排名' : 'Teacher Performance'}</h3>
+            <div className="space-y-3">
+              {teacherAnalytics.slice(0, 10).map((teacher, i) => (
+                <div key={teacher.id} className="flex items-center gap-4 p-3 rounded-xl bg-gray-50">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
+                    i === 0 ? 'bg-amber-500' : i === 1 ? 'bg-gray-400' : i === 2 ? 'bg-amber-700' : 'bg-gray-300'
+                  }`}>
+                    {i + 1}
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-gray-900">{teacher.name}</p>
+                    <p className="text-xs text-gray-500">
+                      {lang === 'zh' ? `${teacher.courses}节课程 · ${teacher.completedCourses}节已完成` : `${teacher.courses} courses · ${teacher.completedCourses} completed`}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-bold text-indigo-600">{teacher.completedCourses}</p>
+                    <p className="text-xs text-gray-500">{lang === 'zh' ? '课时' : 'Hours'}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'finance' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-green-600">¥{financialAnalytics.monthIncome.toLocaleString()}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月收入' : 'Month Income'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-red-600">¥{financialAnalytics.monthExpense.toLocaleString()}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月支出' : 'Month Expense'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className={`text-3xl font-bold ${financialAnalytics.monthProfit >= 0 ? 'text-indigo-600' : 'text-red-600'}`}>
+                ¥{financialAnalytics.monthProfit.toLocaleString()}
+              </p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月利润' : 'Month Profit'}</p>
+            </div>
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <p className="text-3xl font-bold text-purple-600">{financialAnalytics.profitRate}%</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? '利润率' : 'Profit Rate'}</p>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '年度汇总' : 'Year Summary'}</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 bg-green-50 rounded-xl">
+                  <span className="text-gray-600">{lang === 'zh' ? '年度收入' : 'Year Income'}</span>
+                  <span className="font-bold text-green-600">¥{financialAnalytics.yearIncome.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 bg-red-50 rounded-xl">
+                  <span className="text-gray-600">{lang === 'zh' ? '年度支出' : 'Year Expense'}</span>
+                  <span className="font-bold text-red-600">¥{financialAnalytics.yearExpense.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 bg-indigo-50 rounded-xl">
+                  <span className="text-gray-600">{lang === 'zh' ? '年度利润' : 'Year Profit'}</span>
+                  <span className={`font-bold ${financialAnalytics.yearProfit >= 0 ? 'text-indigo-600' : 'text-red-600'}`}>
+                    ¥{financialAnalytics.yearProfit.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '收入预测' : 'Revenue Forecast'}</h3>
+              <div className="text-center py-6">
+                <p className="text-4xl font-bold text-indigo-600">¥{Math.round(financialAnalytics.forecastNextMonth).toLocaleString()}</p>
+                <p className="text-sm text-gray-500 mt-2">{lang === 'zh' ? '预计下月收入' : 'Forecasted Next Month'}</p>
+              </div>
+              <div className="mt-4 p-3 bg-gray-50 rounded-xl">
+                <p className="text-xs text-gray-500">
+                  {lang === 'zh' 
+                    ? '基于近 12 个月平均收入计算，考虑 5% 增长预期'
+                    : 'Based on 12-month average with 5% growth expectation'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '收支对比' : 'Income vs Expense'}</h3>
+            <div className="flex items-end gap-2 h-40">
+              {monthlyData.map((data, i) => {
+                const maxValue = Math.max(...monthlyData.map(d => Math.max(d.income, d.expense)), 1);
+                
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div className="w-full flex gap-0.5 items-end h-32">
+                      <div 
+                        className="flex-1 bg-green-400 rounded-t transition-all"
+                        style={{ height: `${(data.income / maxValue) * 100}%` }}
+                      />
+                      <div 
+                        className="flex-1 bg-red-400 rounded-t transition-all"
+                        style={{ height: `${(data.expense / maxValue) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500">{data.month}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-center gap-6 mt-4 pt-4 border-t border-gray-100">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-green-400 rounded" />
+                <span className="text-xs text-gray-600">{lang === 'zh' ? '收入' : 'Income'}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-red-400 rounded" />
+                <span className="text-xs text-gray-600">{lang === 'zh' ? '支出' : 'Expense'}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
