@@ -3,12 +3,26 @@ import { Users, UserPlus, Search, Edit2, Trash2, Shield, Key, Eye, EyeOff, Loade
 import { Language, User } from '../types';
 import { useToast } from './Toast';
 import { api } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 
 interface UserManagementProps {
   lang: Language;
 }
 
+interface CustomRole {
+  id: string;
+  name: string;
+  color: string;
+  permissions: string[];
+}
+
+const defaultCustomRoles: CustomRole[] = [
+  { id: 'assistant', name: '助教', color: '#74B9FF', permissions: ['schedule', 'students'] },
+  { id: 'finance', name: '财务', color: '#FD79A8', permissions: ['finance', 'reports'] },
+];
+
 const roleConfig = {
+  super_admin: { label: '超级管理员', color: 'bg-gradient-to-r from-[#8E44AD] to-[#6C5CE7] text-white', icon: Shield },
   admin: { label: '管理员', color: 'bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] text-white', icon: Shield },
   teacher: { label: '教师', color: 'bg-gradient-to-r from-[#4ECDC4] to-[#7EDDD6] text-white', icon: Users },
   parent: { label: '家长', color: 'bg-gradient-to-r from-[#A29BFE] to-[#B8B3FF] text-white', icon: Users },
@@ -27,6 +41,8 @@ const permissionOptions = [
 
 export default function UserManagement({ lang }: UserManagementProps) {
   const { showToast } = useToast();
+  const { user: currentUser } = useAuth();
+  const isSuperAdmin = currentUser?.role === 'super_admin';
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -34,12 +50,24 @@ export default function UserManagement({ lang }: UserManagementProps) {
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [activeTab, setActiveTab] = useState<'users' | 'roles'>('users');
+  const [customRoles, setCustomRoles] = useState<CustomRole[]>(() => {
+    const saved = localStorage.getItem('customRoles');
+    return saved ? JSON.parse(saved) : defaultCustomRoles;
+  });
+  const [showRoleForm, setShowRoleForm] = useState(false);
+  const [editingRole, setEditingRole] = useState<CustomRole | null>(null);
+  const [roleFormData, setRoleFormData] = useState({
+    name: '',
+    color: '#4ECDC4',
+    permissions: [] as string[],
+  });
 
   const [formData, setFormData] = useState({
     username: '',
     password: '',
     name: '',
-    role: 'teacher' as 'admin' | 'teacher' | 'parent',
+    role: 'teacher' as 'super_admin' | 'admin' | 'teacher' | 'parent',
     permissions: [] as string[],
   });
 
@@ -75,6 +103,11 @@ export default function UserManagement({ lang }: UserManagementProps) {
       return;
     }
 
+    if (!isSuperAdmin && (formData.role === 'admin' || formData.role === 'super_admin')) {
+      showToast(lang === 'zh' ? '仅超级管理员可新增管理员账号' : 'Only super admin can create admin accounts', 'error');
+      return;
+    }
+
     try {
       await api.addUser({
         username: formData.username,
@@ -99,6 +132,11 @@ export default function UserManagement({ lang }: UserManagementProps) {
       return;
     }
 
+    if (!isSuperAdmin && (formData.role === 'admin' || formData.role === 'super_admin')) {
+      showToast(lang === 'zh' ? '仅超级管理员可设置管理员角色' : 'Only super admin can assign admin role', 'error');
+      return;
+    }
+
     try {
       await api.updateUser(editingUser.id, {
         name: formData.name,
@@ -118,6 +156,11 @@ export default function UserManagement({ lang }: UserManagementProps) {
 
   const handleDeleteUser = async (userId: string) => {
     if (!confirm(lang === 'zh' ? '确定要删除该用户吗？' : 'Are you sure to delete this user?')) return;
+    const target = users.find(u => u.id === userId);
+    if (!isSuperAdmin && (target?.role === 'admin' || target?.role === 'super_admin')) {
+      showToast(lang === 'zh' ? '仅超级管理员可删除管理员账号' : 'Only super admin can delete admin accounts', 'error');
+      return;
+    }
 
     try {
       await api.deleteUser(userId);
@@ -129,6 +172,10 @@ export default function UserManagement({ lang }: UserManagementProps) {
   };
 
   const handleEditUser = (user: User) => {
+    if (!isSuperAdmin && (user.role === 'admin' || user.role === 'super_admin')) {
+      showToast(lang === 'zh' ? '仅超级管理员可编辑管理员账号' : 'Only super admin can edit admin accounts', 'error');
+      return;
+    }
     setEditingUser(user);
     setFormData({
       username: user.username,
@@ -159,6 +206,69 @@ export default function UserManagement({ lang }: UserManagementProps) {
     }));
   };
 
+  const toggleRolePermission = (permissionId: string) => {
+    setRoleFormData(prev => ({
+      ...prev,
+      permissions: prev.permissions.includes(permissionId)
+        ? prev.permissions.filter(p => p !== permissionId)
+        : [...prev.permissions, permissionId]
+    }));
+  };
+
+  const saveCustomRoles = (newRoles: CustomRole[]) => {
+    setCustomRoles(newRoles);
+    localStorage.setItem('customRoles', JSON.stringify(newRoles));
+  };
+
+  const handleAddRole = () => {
+    if (!roleFormData.name.trim()) {
+      showToast(lang === 'zh' ? '请输入角色名称' : 'Please enter role name', 'error');
+      return;
+    }
+
+    const newRole: CustomRole = {
+      id: editingRole ? editingRole.id : `custom-${Date.now()}`,
+      name: roleFormData.name,
+      color: roleFormData.color,
+      permissions: roleFormData.permissions,
+    };
+
+    if (editingRole) {
+      saveCustomRoles(customRoles.map(r => r.id === editingRole.id ? newRole : r));
+    } else {
+      saveCustomRoles([...customRoles, newRole]);
+    }
+
+    showToast(lang === 'zh' ? '角色保存成功' : 'Role saved successfully', 'success');
+    setShowRoleForm(false);
+    setEditingRole(null);
+    resetRoleForm();
+  };
+
+  const handleDeleteRole = (roleId: string) => {
+    if (!confirm(lang === 'zh' ? '确定要删除这个角色吗？' : 'Are you sure to delete this role?')) return;
+    saveCustomRoles(customRoles.filter(r => r.id !== roleId));
+    showToast(lang === 'zh' ? '角色删除成功' : 'Role deleted successfully', 'success');
+  };
+
+  const handleEditRole = (role: CustomRole) => {
+    setEditingRole(role);
+    setRoleFormData({
+      name: role.name,
+      color: role.color,
+      permissions: role.permissions,
+    });
+    setShowRoleForm(true);
+  };
+
+  const resetRoleForm = () => {
+    setRoleFormData({
+      name: '',
+      color: '#4ECDC4',
+      permissions: [],
+    });
+  };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center h-[60vh]">
@@ -179,27 +289,63 @@ export default function UserManagement({ lang }: UserManagementProps) {
         <div>
           <h1 className="text-xl font-bold bg-gradient-to-r from-[#FF6B6B] to-[#4ECDC4] bg-clip-text text-transparent flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-[#FFE66D]" />
-            {lang === 'zh' ? '用户管理' : 'User Management'}
+            {lang === 'zh' ? '用户与权限管理' : 'User & Permission Management'}
           </h1>
           <p className="text-sm text-gray-500 mt-1 flex items-center gap-1">
             <Heart className="w-4 h-4 text-[#FF6B6B]" />
-            {lang === 'zh' ? '管理教师和家长账号及权限' : 'Manage teacher and parent accounts'}
+            {lang === 'zh' ? '管理用户账号、角色和权限' : 'Manage user accounts, roles and permissions'}
           </p>
         </div>
-        <button
-          onClick={() => {
-            resetForm();
-            setEditingUser(null);
-            setShowForm(true);
-          }}
-          className="w-full sm:w-auto bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] text-white px-4 py-2.5 rounded-xl hover:shadow-lg transition-all flex items-center justify-center gap-2 shadow-md shadow-[#FF6B6B]/30"
-        >
-          <UserPlus className="w-4 h-4" />
-          {lang === 'zh' ? '添加用户' : 'Add User'}
-        </button>
+        {activeTab === 'users' && (
+          <button
+            onClick={() => {
+              resetForm();
+              setEditingUser(null);
+              setShowForm(true);
+            }}
+            className="w-full sm:w-auto bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] text-white px-4 py-2.5 rounded-xl hover:shadow-lg transition-all flex items-center justify-center gap-2 shadow-md shadow-[#FF6B6B]/30"
+          >
+            <UserPlus className="w-4 h-4" />
+            {lang === 'zh' ? '添加用户' : 'Add User'}
+          </button>
+        )}
+        {activeTab === 'roles' && (
+          <button
+            onClick={() => {
+              resetRoleForm();
+              setEditingRole(null);
+              setShowRoleForm(true);
+            }}
+            className="w-full sm:w-auto bg-gradient-to-r from-[#A29BFE] to-[#B8B3FF] text-white px-4 py-2.5 rounded-xl hover:shadow-lg transition-all flex items-center justify-center gap-2 shadow-md shadow-[#A29BFE]/30"
+          >
+            <Shield className="w-4 h-4" />
+            {lang === 'zh' ? '创建角色' : 'Create Role'}
+          </button>
+        )}
       </div>
 
-      <div className="bg-white rounded-3xl shadow-lg border border-gray-100 p-5">
+      <div className="flex gap-2 overflow-x-auto pb-2">
+        {[
+          { id: 'users', label: lang === 'zh' ? '用户管理' : 'Users', icon: <Users className="w-4 h-4" /> },
+          { id: 'roles', label: lang === 'zh' ? '角色管理' : 'Roles', icon: <Shield className="w-4 h-4" /> },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id as any)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-300 flex items-center gap-2 ${
+              activeTab === tab.id
+                ? 'bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] text-white shadow-lg shadow-[#FF6B6B]/30'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'users' && (
+        <div className="bg-white rounded-3xl shadow-lg border border-gray-100 p-5">
         <div className="flex flex-col sm:flex-row gap-3 mb-5">
           <div className="relative flex-1">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -217,6 +363,7 @@ export default function UserManagement({ lang }: UserManagementProps) {
             className="px-4 py-3 border-2 border-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF6B6B]/20 hover:border-gray-200 transition-all"
           >
             <option value="all">{lang === 'zh' ? '全部角色' : 'All Roles'}</option>
+            {isSuperAdmin && <option value="super_admin">{lang === 'zh' ? '超级管理员' : 'Super Admin'}</option>}
             <option value="admin">{lang === 'zh' ? '管理员' : 'Admin'}</option>
             <option value="teacher">{lang === 'zh' ? '教师' : 'Teacher'}</option>
             <option value="parent">{lang === 'zh' ? '家长' : 'Parent'}</option>
@@ -252,6 +399,7 @@ export default function UserManagement({ lang }: UserManagementProps) {
                   </button>
                   <button
                     onClick={() => handleDeleteUser(user.id)}
+                    disabled={!isSuperAdmin && (user.role === 'admin' || user.role === 'super_admin')}
                     className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-[#FF6B6B] transition"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -267,7 +415,8 @@ export default function UserManagement({ lang }: UserManagementProps) {
             </div>
           )}
         </div>
-      </div>
+        </div>
+      )}
 
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -363,7 +512,9 @@ export default function UserManagement({ lang }: UserManagementProps) {
                       {lang === 'zh' ? '角色' : 'Role'}
                     </label>
                     <div className="grid grid-cols-3 gap-2">
-                      {Object.entries(roleConfig).map(([role, config]) => {
+                      {Object.entries(roleConfig)
+                        .filter(([role]) => isSuperAdmin || (role !== 'admin' && role !== 'super_admin'))
+                        .map(([role, config]) => {
                         const Icon = config.icon;
                         return (
                           <button
@@ -441,6 +592,215 @@ export default function UserManagement({ lang }: UserManagementProps) {
                 >
                   <Sparkles className="w-4 h-4" />
                   {editingUser ? (lang === 'zh' ? '保存修改' : 'Save Changes') : (lang === 'zh' ? '添加用户' : 'Add User')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'roles' && (
+        <div className="bg-white rounded-3xl shadow-lg border border-gray-100 p-5">
+          <div className="flex items-center gap-2 mb-6">
+            <div className="w-10 h-10 bg-gradient-to-br from-[#A29BFE] to-[#B8B3FF] rounded-xl flex items-center justify-center">
+              <Shield className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h2 className="font-bold text-gray-900">{lang === 'zh' ? '自定义角色管理' : 'Custom Role Management'}</h2>
+              <p className="text-xs text-gray-500">{lang === 'zh' ? '创建和管理自定义角色及权限' : 'Create and manage custom roles and permissions'}</p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {customRoles.map(role => (
+              <div
+                key={role.id}
+                className="p-4 bg-gradient-to-r from-gray-50 to-white rounded-2xl border border-gray-100 hover:shadow-md transition-all"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div 
+                      className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-medium shadow-md"
+                      style={{ backgroundColor: role.color }}
+                    >
+                      {role.name.charAt(0)}
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-gray-900">{role.name}</h3>
+                      <p className="text-xs text-gray-500">{lang === 'zh' ? '自定义角色' : 'Custom Role'}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleEditRole(role)}
+                      className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-[#4ECDC4] transition"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteRole(role.id)}
+                      className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-[#FF6B6B] transition"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {role.permissions.map(permId => {
+                    const perm = permissionOptions.find(p => p.id === permId);
+                    return perm ? (
+                      <span key={permId} className="px-2.5 py-1 bg-gray-100 text-gray-700 rounded-full text-xs font-medium">
+                        {perm.label}
+                      </span>
+                    ) : null;
+                  })}
+                  {role.permissions.length === 0 && (
+                    <span className="text-xs text-gray-400">{lang === 'zh' ? '暂无权限' : 'No permissions'}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            {customRoles.length === 0 && (
+              <div className="text-center py-12 text-gray-500">
+                <Shield className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                <p>{lang === 'zh' ? '暂无自定义角色' : 'No custom roles found'}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showRoleForm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg animate-scale-in max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-[#A29BFE] to-[#B8B3FF] rounded-xl flex items-center justify-center">
+                  <Shield className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">
+                    {editingRole ? (lang === 'zh' ? '编辑角色' : 'Edit Role') : (lang === 'zh' ? '创建角色' : 'Create Role')}
+                  </h2>
+                  <p className="text-xs text-gray-500">
+                    {editingRole ? (lang === 'zh' ? '修改角色信息和权限' : 'Update role info and permissions') : (lang === 'zh' ? '创建新的自定义角色' : 'Create a new custom role')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowRoleForm(false);
+                  setEditingRole(null);
+                  resetRoleForm();
+                }}
+                className="p-2 rounded-xl hover:bg-gray-100 transition text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5">
+              <div className="bg-gradient-to-br from-[#A29BFE]/5 to-[#B8B3FF]/5 rounded-2xl p-4 border border-[#A29BFE]/10">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-8 h-8 bg-gradient-to-br from-[#A29BFE] to-[#B8B3FF] rounded-lg flex items-center justify-center">
+                    <Key className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="font-bold text-gray-900">{lang === 'zh' ? '角色信息' : 'Role Info'}</h3>
+                </div>
+                
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      {lang === 'zh' ? '角色名称' : 'Role Name'}
+                    </label>
+                    <input
+                      type="text"
+                      value={roleFormData.name}
+                      onChange={e => setRoleFormData({ ...roleFormData, name: e.target.value })}
+                      className="w-full px-4 py-3 border-2 border-gray-100 bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[#A29BFE]/20 hover:border-gray-200 transition-all"
+                      placeholder={lang === 'zh' ? '请输入角色名称' : 'Enter role name'}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      {lang === 'zh' ? '角色颜色' : 'Role Color'}
+                    </label>
+                    <div className="flex gap-2 flex-wrap">
+                      {[
+                        '#FF6B6B', '#4ECDC4', '#95E1A3', '#FFE66D', '#A29BFE', 
+                        '#FD79A8', '#74B9FF', '#FFB347'
+                      ].map(color => (
+                        <button
+                          key={color}
+                          type="button"
+                          onClick={() => setRoleFormData({ ...roleFormData, color })}
+                          className={`w-10 h-10 rounded-full border-2 transition-all ${
+                            roleFormData.color === color ? 'border-gray-800 scale-110' : 'border-transparent'
+                          }`}
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gradient-to-br from-[#4ECDC4]/5 to-[#7EDDD6]/5 rounded-2xl p-4 border border-[#4ECDC4]/10">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-8 h-8 bg-gradient-to-br from-[#4ECDC4] to-[#7EDDD6] rounded-lg flex items-center justify-center">
+                    <Shield className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="font-bold text-gray-900">{lang === 'zh' ? '权限设置' : 'Permissions'}</h3>
+                </div>
+                
+                <div className="space-y-2">
+                  {permissionOptions.map(permission => (
+                    <button
+                      key={permission.id}
+                      type="button"
+                      onClick={() => toggleRolePermission(permission.id)}
+                      className={`w-full p-3 rounded-xl text-left transition-all flex items-center gap-3 ${
+                        roleFormData.permissions.includes(permission.id)
+                          ? 'bg-gradient-to-r from-[#4ECDC4]/10 to-[#7EDDD6]/10 border border-[#4ECDC4]/30'
+                          : 'bg-white border border-gray-100 hover:border-gray-200'
+                      }`}
+                    >
+                      <div className={`w-5 h-5 rounded-md flex items-center justify-center ${
+                        roleFormData.permissions.includes(permission.id)
+                          ? 'bg-[#4ECDC4] text-white'
+                          : 'bg-gray-100'
+                      }`}>
+                        {roleFormData.permissions.includes(permission.id) && <Check className="w-3 h-3" />}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900 text-sm">{permission.label}</p>
+                        <p className="text-xs text-gray-500">{permission.description}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2 pb-20 md:pb-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowRoleForm(false);
+                    setEditingRole(null);
+                    resetRoleForm();
+                  }}
+                  className="flex-1 py-3.5 rounded-xl border-2 border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition-all"
+                >
+                  {lang === 'zh' ? '取消' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddRole}
+                  className="flex-1 py-3.5 rounded-xl bg-gradient-to-r from-[#A29BFE] to-[#B8B3FF] text-white font-medium hover:shadow-lg hover:shadow-[#A29BFE]/30 transition-all flex items-center justify-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  {editingRole ? (lang === 'zh' ? '保存修改' : 'Save Changes') : (lang === 'zh' ? '创建角色' : 'Create Role')}
                 </button>
               </div>
             </div>

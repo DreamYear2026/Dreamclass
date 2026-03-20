@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Plus, Search, Edit2, Trash2, Phone, Loader2, Download, ArrowUp, ArrowDown, ChevronRight, Clock, User, Users, AlertTriangle, BookOpen, TrendingUp, Filter, MoreVertical, CheckSquare, Square, X, Save, MessageSquare, DollarSign, Upload, FileText, Sparkles, Star, Heart } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Phone, Loader2, Download, ArrowUp, ArrowDown, ChevronRight, Clock, User, Users, AlertTriangle, BookOpen, TrendingUp, Filter, MoreVertical, CheckSquare, Square, X, Save, MessageSquare, DollarSign, Upload, FileText, Sparkles, Star, Heart, GraduationCap, Calendar, ShoppingCart } from 'lucide-react';
 import { Language, Student } from '../types';
 import { useTranslation } from '../i18n';
 import { useStudents, useCourses, useCampuses } from '../contexts/AppContext';
 import { useToast } from './Toast';
 import StudentForm from './StudentForm';
 import StudentDetail from './StudentDetail';
+import RegistrationPage from './RegistrationPage';
 import { exportToCSV, exportToExcel, exportToPDF } from '../utils/export';
-import { parseCSV, parseExcel, downloadTemplate, ImportResult } from '../utils/import';
+import { parseCSV, parseExcel, downloadTemplate, ImportResult, ImportStudent } from '../utils/import';
 import { api } from '../services/api';
 import Pagination from './Pagination';
 import { TableSkeleton, StatCardSkeleton, Skeleton } from './Skeleton';
@@ -31,6 +32,11 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
   const { campuses } = useCampuses();
   const { showToast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchHistory, setShowSearchHistory] = useState(false);
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+    const saved = localStorage.getItem('studentsSearchHistory');
+    return saved ? JSON.parse(saved) : [];
+  });
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const [levelFilter, setLevelFilter] = useState('all');
   const [hoursFilter, setHoursFilter] = useState(() => {
@@ -58,8 +64,144 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
   const [showImportModal, setShowImportModal] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ processed: 0, total: 0 });
+  const [importConcurrency, setImportConcurrency] = useState<3 | 5 | 10>(() => {
+    const saved = localStorage.getItem('studentsImportConcurrency');
+    if (saved === '3' || saved === '5' || saved === '10') return Number(saved) as 3 | 5 | 10;
+    return 5;
+  });
+  const [importSubmitErrors, setImportSubmitErrors] = useState<Array<{ index: number; name: string; phone: string; error: string }>>([]);
+  const [importFailedStudents, setImportFailedStudents] = useState<Array<{ index: number; student: ImportStudent; error: string }>>([]);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [savedFilters, setSavedFilters] = useState(() => {
+    const saved = localStorage.getItem('savedStudentFilters');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [showSaveFilterModal, setShowSaveFilterModal] = useState(false);
+  const [filterName, setFilterName] = useState('');
+  const [showBatchUpgradeModal, setShowBatchUpgradeModal] = useState(false);
+  const [showBatchRenewalModal, setShowBatchRenewalModal] = useState(false);
+  const [showBatchScheduleModal, setShowBatchScheduleModal] = useState(false);
+  const [showBatchMessageModal, setShowBatchMessageModal] = useState(false);
+  const [newLevel, setNewLevel] = useState('');
+  const [renewalMessage, setRenewalMessage] = useState('');
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('');
+  const [scheduleTeacher, setScheduleTeacher] = useState('');
+  const [scheduleLocation, setScheduleLocation] = useState('');
+  const [batchMessage, setBatchMessage] = useState('');
+  const [showMobileActions, setShowMobileActions] = useState(false);
+  const [actionStudent, setActionStudent] = useState<Student | null>(null);
+  const [showRegistration, setShowRegistration] = useState(false);
+  const [registrationStudentId, setRegistrationStudentId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const addToSearchHistory = (query: string) => {
+    if (!query.trim()) return;
+    const newHistory = [query, ...searchHistory.filter(q => q !== query)].slice(0, 10);
+    setSearchHistory(newHistory);
+    localStorage.setItem('studentsSearchHistory', JSON.stringify(newHistory));
+  };
+
+  const clearSearchHistory = () => {
+    setSearchHistory([]);
+    localStorage.removeItem('studentsSearchHistory');
+  };
+
+  const autoTuneImportConcurrency = (attempted: number, failed: number) => {
+    if (attempted < 5) return;
+    const failureRate = failed / attempted;
+    let next = importConcurrency;
+    if (failureRate >= 0.2 && importConcurrency > 3) {
+      next = importConcurrency === 10 ? 5 : 3;
+    } else if (failureRate <= 0.02 && attempted >= 20 && importConcurrency < 10) {
+      next = importConcurrency === 3 ? 5 : 10;
+    }
+    if (next !== importConcurrency) {
+      setImportConcurrency(next);
+      localStorage.setItem('studentsImportConcurrency', String(next));
+    }
+  };
+
+  const saveCurrentFilter = () => {
+    const filter = {
+      id: Date.now().toString(),
+      name: filterName,
+      levelFilter,
+      hoursFilter,
+      statusFilter,
+      tagFilter,
+      createdAt: new Date().toISOString()
+    };
+    const newSavedFilters = [...savedFilters, filter];
+    setSavedFilters(newSavedFilters);
+    localStorage.setItem('savedStudentFilters', JSON.stringify(newSavedFilters));
+    setShowSaveFilterModal(false);
+    setFilterName('');
+    showToast(lang === 'zh' ? '筛选条件已保存' : 'Filter saved', 'success');
+  };
+
+  const applySavedFilter = (filter: any) => {
+    setLevelFilter(filter.levelFilter);
+    setHoursFilter(filter.hoursFilter);
+    setStatusFilter(filter.statusFilter);
+    setTagFilter(filter.tagFilter);
+  };
+
+  const deleteSavedFilter = (id: string) => {
+    const newSavedFilters = savedFilters.filter((f: any) => f.id !== id);
+    setSavedFilters(newSavedFilters);
+    localStorage.setItem('savedStudentFilters', JSON.stringify(newSavedFilters));
+  };
+
+  const handleBatchUpgrade = async () => {
+    if (selectedIds.size === 0 || !newLevel) return;
+    const selectedIdList = Array.from(selectedIds);
+    try {
+      const results = await Promise.allSettled(
+        selectedIdList.map((id) => api.updateStudent(id, { level: newLevel }))
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      await refreshStudents();
+      setSelectedIds(new Set());
+      setShowBatchUpgradeModal(false);
+      setNewLevel('');
+      if (failed > 0) {
+        showToast(`已完成升班：成功 ${selectedIdList.length - failed}，失败 ${failed}`, 'error');
+      } else {
+        showToast(`已为 ${selectedIdList.length} 位学员升班`, 'success');
+      }
+    } catch (error) {
+      showToast('批量升班失败', 'error');
+    }
+  };
+
+  const handleBatchRenewal = () => {
+    if (selectedIds.size === 0) return;
+    showToast(`已发送续费提醒给 ${selectedIds.size} 位家长`, 'success');
+    setSelectedIds(new Set());
+    setShowBatchRenewalModal(false);
+    setRenewalMessage('');
+  };
+
+  const handleBatchSchedule = () => {
+    if (selectedIds.size === 0 || !scheduleDate || !scheduleTime || !scheduleTeacher) return;
+    showToast(`已为 ${selectedIds.size} 位学员安排课程`, 'success');
+    setSelectedIds(new Set());
+    setShowBatchScheduleModal(false);
+    setScheduleDate('');
+    setScheduleTime('');
+    setScheduleTeacher('');
+    setScheduleLocation('');
+  };
+
+  const handleBatchMessage = () => {
+    if (selectedIds.size === 0 || !batchMessage.trim()) return;
+    showToast(`已发送消息给 ${selectedIds.size} 位家长`, 'success');
+    setSelectedIds(new Set());
+    setShowBatchMessageModal(false);
+    setBatchMessage('');
+  };
 
   const levels = useMemo(() => {
     const levelSet = new Set(students.map(s => s.level));
@@ -114,7 +256,7 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
       }
       return sortOrder === 'asc' ? comparison : -comparison;
     });
-  }, [students, debouncedSearchQuery, levelFilter, hoursFilter, sortField, sortOrder]);
+  }, [students, debouncedSearchQuery, levelFilter, hoursFilter, statusFilter, tagFilter, sortField, sortOrder]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -190,13 +332,12 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
   const handleBatchDelete = async () => {
     if (selectedIds.size === 0) return;
     if (confirm(`确定要删除选中的 ${selectedIds.size} 位学员吗？此操作不可撤销。`)) {
+      const selectedIdList = Array.from(selectedIds);
       try {
-        for (const id of selectedIds) {
-          await api.deleteStudent(id);
-        }
+        await api.batchDeleteStudents(selectedIdList);
         await refreshStudents();
         setSelectedIds(new Set());
-        showToast(`已删除 ${selectedIds.size} 位学员`, 'success');
+        showToast(`已删除 ${selectedIdList.length} 位学员`, 'success');
       } catch (error) {
         showToast('批量删除失败', 'error');
       }
@@ -205,18 +346,25 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
 
   const handleBatchAdjustHours = async () => {
     if (selectedIds.size === 0 || batchHoursAdjustment === 0) return;
+    const selectedIdList = Array.from(selectedIds);
     try {
-      for (const id of selectedIds) {
+      const updateJobs = selectedIdList.map((id) => {
         const student = students.find(s => s.id === id);
-        if (student) {
-          const newHours = Math.max(0, student.remainingHours + batchHoursAdjustment);
-          await updateStudent(id, { remainingHours: newHours });
-        }
-      }
+        if (!student) return Promise.reject(new Error('student not found'));
+        const newHours = Math.max(0, student.remainingHours + batchHoursAdjustment);
+        return api.updateStudent(id, { remainingHours: newHours });
+      });
+      const results = await Promise.allSettled(updateJobs);
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      await refreshStudents();
       setSelectedIds(new Set());
       setShowBatchHoursModal(false);
       setBatchHoursAdjustment(0);
-      showToast(`已为 ${selectedIds.size} 位学员${batchHoursAdjustment > 0 ? '增加' : '减少'}课时`, 'success');
+      if (failed > 0) {
+        showToast(`批量调整完成：成功 ${selectedIdList.length - failed}，失败 ${failed}`, 'error');
+      } else {
+        showToast(`已为 ${selectedIdList.length} 位学员${batchHoursAdjustment > 0 ? '增加' : '减少'}课时`, 'success');
+      }
     } catch (error) {
       showToast('批量调整课时失败', 'error');
     }
@@ -304,6 +452,8 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
 
     try {
       setImporting(true);
+      setImportProgress({ processed: 0, total: 0 });
+      setImportSubmitErrors([]);
       let result: ImportResult;
 
       if (file.name.endsWith('.csv')) {
@@ -331,35 +481,175 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
 
     try {
       setImporting(true);
-      for (const student of importResult.success) {
-        await addStudent(student);
+      setImportSubmitErrors([]);
+      setImportFailedStudents([]);
+      setImportProgress({ processed: 0, total: importResult.success.length });
+      const results = await processWithConcurrency(
+        importResult.success,
+        importConcurrency,
+        async (student) => {
+          try {
+            return await api.addStudent(student as Omit<Student, 'id'>);
+          } finally {
+            setImportProgress((prev) => ({ ...prev, processed: Math.min(prev.processed + 1, prev.total) }));
+          }
+        }
+      );
+      const failedDetails = results
+        .map((r, i) => ({ r, i }))
+        .filter(({ r }) => r.status === 'rejected')
+        .map(({ r, i }) => ({
+          index: i + 1,
+          student: importResult.success[i],
+          error: r.status === 'rejected' ? (r.reason?.message || '导入失败') : '',
+        }));
+      const failed = failedDetails.map((f) => ({
+          index: f.index,
+          name: f.student?.name || '',
+          phone: f.student?.parentPhone || '',
+          error: f.error,
+        }));
+
+      await refreshStudents();
+      setImportSubmitErrors(failed);
+      setImportFailedStudents(failedDetails);
+      autoTuneImportConcurrency(importResult.success.length, failed.length);
+
+      if (failed.length > 0) {
+        showToast(`导入完成：成功 ${importResult.success.length - failed.length}，失败 ${failed.length}`, 'warning');
+      } else {
+        showToast(`成功导入 ${importResult.success.length} 位学员`, 'success');
+        setShowImportModal(false);
+        setImportResult(null);
+        setImportFailedStudents([]);
       }
-      showToast(`成功导入 ${importResult.success.length} 位学员`, 'success');
-      setShowImportModal(false);
-      setImportResult(null);
     } catch (error) {
       showToast('导入失败，请重试', 'error');
     } finally {
       setImporting(false);
+      setImportProgress({ processed: 0, total: 0 });
     }
   };
 
-  const getRecentActiveStudents = () => {
-    const sevenDaysAgo = subDays(new Date(), 7);
-    return students.filter(s => {
-      const studentCourses = courses.filter(c => c.studentId === s.id && c.status === 'completed');
-      return studentCourses.some(c => isAfter(parseISO(c.date), sevenDaysAgo));
-    }).length;
+  const handleDownloadImportFailures = () => {
+    if (!importResult) return;
+    const parseErrors = importResult.errors.map((e) => ({
+      来源: '解析',
+      行号: e.row,
+      学员: e.data?.name || e.data?.姓名 || '',
+      电话: e.data?.parentPhone || e.data?.联系电话 || '',
+      错误: e.error,
+    }));
+    const submitErrors = importSubmitErrors.map((e) => ({
+      来源: '导入',
+      行号: `解析后第${e.index}条`,
+      学员: e.name,
+      电话: e.phone,
+      错误: e.error,
+    }));
+    const rows = [...parseErrors, ...submitErrors];
+    if (rows.length === 0) {
+      showToast('当前没有失败记录', 'warning');
+      return;
+    }
+    exportToCSV(rows, `学员导入失败明细_${format(new Date(), 'yyyy-MM-dd_HH-mm')}`);
+    showToast('失败明细已下载', 'success');
   };
+
+  const handleRetryFailedImport = async () => {
+    if (importFailedStudents.length === 0) return;
+    try {
+      setImporting(true);
+      setImportProgress({ processed: 0, total: importFailedStudents.length });
+      const results = await processWithConcurrency(
+        importFailedStudents,
+        importConcurrency,
+        async (f) => {
+          try {
+            return await api.addStudent(f.student as Omit<Student, 'id'>);
+          } finally {
+            setImportProgress((prev) => ({ ...prev, processed: Math.min(prev.processed + 1, prev.total) }));
+          }
+        }
+      );
+      const remainFailedDetails = results
+        .map((r, i) => ({ r, i }))
+        .filter(({ r }) => r.status === 'rejected')
+        .map(({ r, i }) => ({
+          index: importFailedStudents[i].index,
+          student: importFailedStudents[i].student,
+          error: r.status === 'rejected' ? (r.reason?.message || '导入失败') : '',
+        }));
+      const remainFailed = remainFailedDetails.map((f) => ({
+        index: f.index,
+        name: f.student.name || '',
+        phone: f.student.parentPhone || '',
+        error: f.error,
+      }));
+
+      await refreshStudents();
+      setImportFailedStudents(remainFailedDetails);
+      setImportSubmitErrors(remainFailed);
+      autoTuneImportConcurrency(importFailedStudents.length, remainFailed.length);
+
+      if (remainFailed.length > 0) {
+        showToast(`重试完成：成功 ${importFailedStudents.length - remainFailed.length}，失败 ${remainFailed.length}`, 'warning');
+      } else {
+        showToast('失败项已全部重试成功', 'success');
+      }
+    } catch (error) {
+      showToast('重试失败，请稍后再试', 'error');
+    } finally {
+      setImporting(false);
+      setImportProgress({ processed: 0, total: 0 });
+    }
+  };
+
+  const processWithConcurrency = async <T, R>(
+    items: T[],
+    limit: number,
+    worker: (item: T, index: number) => Promise<R>
+  ): Promise<PromiseSettledResult<R>[]> => {
+    const results: PromiseSettledResult<R>[] = new Array(items.length);
+    let nextIndex = 0;
+
+    const run = async () => {
+      while (true) {
+        const currentIndex = nextIndex++;
+        if (currentIndex >= items.length) break;
+        try {
+          const value = await worker(items[currentIndex], currentIndex);
+          results[currentIndex] = { status: 'fulfilled', value };
+        } catch (reason) {
+          results[currentIndex] = { status: 'rejected', reason };
+        }
+      }
+    };
+
+    const poolSize = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: poolSize }, () => run()));
+    return results;
+  };
+
+  const recentActiveStudentIds = useMemo(() => {
+    const sevenDaysAgo = subDays(new Date(), 7);
+    const activeSet = new Set<string>();
+    courses.forEach((c) => {
+      if (c.status === 'completed' && isAfter(parseISO(c.date), sevenDaysAgo)) {
+        activeSet.add(c.studentId);
+      }
+    });
+    return activeSet;
+  }, [courses]);
 
   const stats = useMemo(() => ({
     total: students.length,
     lowHours: students.filter(s => s.remainingHours < 5).length,
-    recentActive: getRecentActiveStudents(),
+    recentActive: students.filter(s => recentActiveStudentIds.has(s.id)).length,
     beginner: students.filter(s => s.level === 'Beginner').length,
     intermediate: students.filter(s => s.level === 'Intermediate').length,
     advanced: students.filter(s => s.level === 'Advanced').length,
-  }), [students, courses]);
+  }), [students, recentActiveStudentIds]);
 
   if (selectedStudentId) {
     return <StudentDetail studentId={selectedStudentId} onBack={() => setSelectedStudentId(null)} lang={lang} />;
@@ -419,38 +709,66 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
 
       {/* Stats Cards */}
       <div className="grid grid-cols-4 gap-2 md:gap-4">
-        <div className="relative overflow-hidden bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg shadow-indigo-500/20">
+        <button
+          onClick={() => {
+            setHoursFilter('all');
+            setStatusFilter('all');
+            setLevelFilter('all');
+            setSearchQuery('');
+          }}
+          className="relative overflow-hidden bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg shadow-indigo-500/20 text-center hover:from-indigo-600 hover:to-indigo-700 transition-all active:scale-95"
+        >
           <div className="hidden md:block absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
             <p className="text-xs md:text-sm font-medium text-white/80">学员</p>
             <p className="text-xl md:text-3xl font-bold mt-0.5 md:mt-1">{stats.total}</p>
           </div>
           <Users className="hidden md:block absolute bottom-3 right-3 w-8 h-8 text-white/20" />
-        </div>
+        </button>
         
-        <div className="relative overflow-hidden bg-gradient-to-br from-red-500 to-orange-500 rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg shadow-red-500/20">
+        <button
+          onClick={() => {
+            setHoursFilter('low');
+            setStatusFilter('all');
+          }}
+          className={`relative overflow-hidden rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg transition-all active:scale-95 text-center ${
+            hoursFilter === 'low' 
+              ? 'bg-gradient-to-br from-red-600 to-orange-600 shadow-red-500/40 ring-2 ring-red-300' 
+              : 'bg-gradient-to-br from-red-500 to-orange-500 shadow-red-500/20 hover:from-red-600 hover:to-orange-600'
+          }`}
+        >
           <div className="hidden md:block absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
             <p className="text-xs md:text-sm font-medium text-white/80">不足</p>
             <p className="text-xl md:text-3xl font-bold mt-0.5 md:mt-1">{stats.lowHours}</p>
           </div>
           <AlertTriangle className="hidden md:block absolute bottom-3 right-3 w-8 h-8 text-white/20" />
-        </div>
+        </button>
         
-        <div className="relative overflow-hidden bg-gradient-to-br from-emerald-500 to-teal-500 rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg shadow-emerald-500/20">
+        <button
+          onClick={() => {
+            setStatusFilter('active');
+            setHoursFilter('all');
+          }}
+          className={`relative overflow-hidden rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg transition-all active:scale-95 text-center ${
+            statusFilter === 'active' 
+              ? 'bg-gradient-to-br from-emerald-600 to-teal-600 shadow-emerald-500/40 ring-2 ring-emerald-300' 
+              : 'bg-gradient-to-br from-emerald-500 to-teal-500 shadow-emerald-500/20 hover:from-emerald-600 hover:to-teal-600'
+          }`}
+        >
           <div className="hidden md:block absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
             <p className="text-xs md:text-sm font-medium text-white/80">活跃</p>
             <p className="text-xl md:text-3xl font-bold mt-0.5 md:mt-1">{stats.recentActive}</p>
           </div>
           <TrendingUp className="hidden md:block absolute bottom-3 right-3 w-8 h-8 text-white/20" />
-        </div>
+        </button>
         
-        <div className="relative overflow-hidden bg-gradient-to-br from-purple-500 to-violet-500 rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg shadow-purple-500/20">
+        <div className="relative overflow-hidden bg-gradient-to-br from-purple-500 to-violet-500 rounded-xl md:rounded-2xl p-3 md:p-5 text-white shadow-lg shadow-purple-500/20 text-center">
           <div className="hidden md:block absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
             <p className="text-xs md:text-sm font-medium text-white/80">级别</p>
-            <div className="flex items-center gap-1 md:gap-2 mt-0.5 md:mt-1 text-xs md:text-sm">
+            <div className="flex items-center justify-center gap-1 md:gap-2 mt-0.5 md:mt-1 text-xl md:text-3xl font-bold">
               <span>{stats.beginner}初</span>
               <span>{stats.intermediate}中</span>
               <span>{stats.advanced}高</span>
@@ -462,15 +780,47 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
 
       {/* Batch Actions Bar */}
       {showBatchActions && (
-        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <CheckSquare className="w-4 h-4 text-indigo-600 flex-shrink-0" />
-            <span className="text-xs sm:text-sm font-medium text-indigo-900 truncate">已选{selectedIds.size}人</span>
+        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <CheckSquare className="w-4 h-4 text-indigo-600 flex-shrink-0" />
+              <span className="text-xs sm:text-sm font-medium text-indigo-900 truncate">已选{selectedIds.size}人</span>
+            </div>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="p-1.5 hover:bg-indigo-100 rounded-lg transition"
+            >
+              <X className="w-4 h-4 text-indigo-600" />
+            </button>
           </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => setShowBatchUpgradeModal(true)}
+              className="px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-medium hover:bg-indigo-50 transition flex items-center gap-1"
+            >
+              <GraduationCap className="w-3.5 h-3.5" /> <span className="hidden sm:inline">批量</span>升班
+            </button>
+            <button
+              onClick={() => setShowBatchRenewalModal(true)}
+              className="px-3 py-1.5 bg-white border border-amber-200 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 transition flex items-center gap-1"
+            >
+              <DollarSign className="w-3.5 h-3.5" /> <span className="hidden sm:inline">续费</span>提醒
+            </button>
+            <button
+              onClick={() => setShowBatchScheduleModal(true)}
+              className="px-3 py-1.5 bg-white border border-emerald-200 text-emerald-600 rounded-lg text-xs font-medium hover:bg-emerald-50 transition flex items-center gap-1"
+            >
+              <Calendar className="w-3.5 h-3.5" /> <span className="hidden sm:inline">批量</span>排课
+            </button>
+            <button
+              onClick={() => setShowBatchMessageModal(true)}
+              className="px-3 py-1.5 bg-white border border-purple-200 text-purple-600 rounded-lg text-xs font-medium hover:bg-purple-50 transition flex items-center gap-1"
+            >
+              <MessageSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">发送</span>消息
+            </button>
             <button
               onClick={() => setShowBatchHoursModal(true)}
-              className="px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-medium hover:bg-indigo-50 transition flex items-center gap-1"
+              className="px-3 py-1.5 bg-white border border-blue-200 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-50 transition flex items-center gap-1"
             >
               <Clock className="w-3.5 h-3.5" /> <span className="hidden sm:inline">调整</span>课时
             </button>
@@ -479,12 +829,6 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
               className="px-3 py-1.5 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 transition flex items-center gap-1"
             >
               <Trash2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">批量</span>删除
-            </button>
-            <button
-              onClick={() => setSelectedIds(new Set())}
-              className="p-1.5 hover:bg-indigo-100 rounded-lg transition"
-            >
-              <X className="w-4 h-4 text-indigo-600" />
             </button>
           </div>
         </div>
@@ -506,7 +850,7 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
           <button
             onClick={() => setShowFilters(!showFilters)}
             className={`p-2 rounded-xl border transition ${
-              levelFilter !== 'all' || hoursFilter !== 'all' 
+              levelFilter !== 'all' || hoursFilter !== 'all' || statusFilter !== 'all' || tagFilter !== 'all'
                 ? 'bg-indigo-50 border-indigo-200 text-indigo-600' 
                 : 'bg-white border-gray-200 text-gray-600'
             }`}
@@ -600,7 +944,7 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
               onClick={() => setShowFilters(false)}
               className="w-full py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition"
             >
-              应用筛选
+              收起筛选
             </button>
           </div>
         )}
@@ -617,8 +961,44 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                 placeholder={t('searchStudents')}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
+                onFocus={() => setShowSearchHistory(true)}
+                onBlur={() => setTimeout(() => setShowSearchHistory(false), 200)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    addToSearchHistory(searchQuery);
+                  }
+                }}
                 className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
+              {showSearchHistory && searchHistory.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 overflow-hidden">
+                  <div className="p-2 border-b border-gray-100 flex items-center justify-between">
+                    <span className="text-xs text-gray-500">{lang === 'zh' ? '搜索历史' : 'Search History'}</span>
+                    <button 
+                      onClick={clearSearchHistory}
+                      className="text-xs text-red-500 hover:text-red-600"
+                    >
+                      {lang === 'zh' ? '清除' : 'Clear'}
+                    </button>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {searchHistory.map((query, index) => (
+                      <button
+                        key={index}
+                        onClick={() => {
+                          setSearchQuery(query);
+                          addToSearchHistory(query);
+                          setShowSearchHistory(false);
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <Clock className="w-3.5 h-3.5 text-gray-400" />
+                        {query}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <select
               value={levelFilter}
@@ -660,8 +1040,39 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
               <option value="medium">课时适中(5-15)</option>
               <option value="high">课时充足(≥15)</option>
             </select>
+            <button
+              onClick={() => setShowSaveFilterModal(true)}
+              className="px-3 py-2 bg-indigo-100 text-indigo-700 rounded-xl text-sm font-medium hover:bg-indigo-200 transition flex items-center gap-1"
+            >
+              <Save className="w-4 h-4" />
+              <span className="hidden sm:inline">{lang === 'zh' ? '保存筛选' : 'Save Filter'}</span>
+            </button>
           </div>
         </div>
+
+        {savedFilters.length > 0 && (
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
+            <div className="flex items-center gap-2 overflow-x-auto">
+              <span className="text-xs text-gray-500 whitespace-nowrap">{lang === 'zh' ? '已保存:' : 'Saved:'}</span>
+              {savedFilters.map((filter: any) => (
+                <div key={filter.id} className="flex items-center gap-1">
+                  <button
+                    onClick={() => applySavedFilter(filter)}
+                    className="px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs hover:bg-indigo-50 hover:border-indigo-300 transition whitespace-nowrap"
+                  >
+                    {filter.name}
+                  </button>
+                  <button
+                    onClick={() => deleteSavedFilter(filter.id)}
+                    className="p-1 hover:bg-red-100 rounded"
+                  >
+                    <X className="w-3 h-3 text-gray-400 hover:text-red-500" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[700px]">
@@ -727,14 +1138,27 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                   </td>
                   <td className="p-4">
                     <div className="flex items-center gap-2">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        student.remainingHours < 5 ? 'bg-red-100 text-red-800' : 
-                        student.remainingHours < 15 ? 'bg-amber-100 text-amber-800' :
-                        'bg-emerald-100 text-emerald-800'
-                      }`}>
-                        {student.remainingHours} {t('hrs')}
-                      </span>
-                      {student.remainingHours < 5 && (
+                      {student.remainingHours === 0 ? (
+                        <button
+                          onClick={() => {
+                            setRegistrationStudentId(student.id);
+                            setShowRegistration(true);
+                          }}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg text-xs font-medium hover:from-green-600 hover:to-emerald-600 transition shadow-sm"
+                        >
+                          <ShoppingCart className="w-3.5 h-3.5" />
+                          报名续课
+                        </button>
+                      ) : (
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          student.remainingHours < 5 ? 'bg-red-100 text-red-800' : 
+                          student.remainingHours < 15 ? 'bg-amber-100 text-amber-800' :
+                          'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {student.remainingHours} {t('hrs')}
+                        </span>
+                      )}
+                      {student.remainingHours > 0 && student.remainingHours < 5 && (
                         <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" title="课时不足" />
                       )}
                     </div>
@@ -821,25 +1245,19 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
               </div>
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => {
-                    setEditingStudent(student);
-                    setShowForm(true);
-                  }}
-                  className="p-2 hover:bg-gray-100 rounded-lg transition"
-                >
-                  <Edit2 className="w-4 h-4 text-gray-400" />
-                </button>
-                <button
-                  onClick={() => handleDeleteStudent(student.id)}
-                  className="p-2 hover:bg-red-50 rounded-lg transition"
-                >
-                  <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-600" />
-                </button>
-                <button
                   onClick={() => setSelectedStudentId(student.id)}
                   className="p-2 hover:bg-gray-100 rounded-lg transition"
                 >
                   <ChevronRight className="w-5 h-5 text-gray-400" />
+                </button>
+                <button
+                  onClick={() => {
+                    setActionStudent(student);
+                    setShowMobileActions(true);
+                  }}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition"
+                >
+                  <MoreVertical className="w-4 h-4 text-gray-400" />
                 </button>
               </div>
             </div>
@@ -851,13 +1269,26 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                 <Phone className="w-3 h-3 mr-1 flex-shrink-0" />
                 <span className="truncate">{student.parentPhone}</span>
               </div>
-              <div className={`flex items-center px-2 py-1 rounded-full text-xs font-medium flex-shrink-0 ${
-                student.remainingHours < 5 ? 'bg-red-100 text-red-700' : 
-                student.remainingHours < 15 ? 'bg-amber-100 text-amber-700' :
-                'bg-emerald-100 text-emerald-700'
-              }`}>
-                {student.remainingHours}节
-              </div>
+              {student.remainingHours === 0 ? (
+                <button
+                  onClick={() => {
+                    setRegistrationStudentId(student.id);
+                    setShowRegistration(true);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg text-xs font-medium flex-shrink-0"
+                >
+                  <ShoppingCart className="w-3 h-3" />
+                  报名
+                </button>
+              ) : (
+                <div className={`flex items-center px-2 py-1 rounded-full text-xs font-medium flex-shrink-0 ${
+                  student.remainingHours < 5 ? 'bg-red-100 text-red-700' : 
+                  student.remainingHours < 15 ? 'bg-amber-100 text-amber-700' :
+                  'bg-emerald-100 text-emerald-700'
+                }`}>
+                  {student.remainingHours}节
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -892,6 +1323,55 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
             </p>
           </div>
         )}
+      </div>
+
+      <div className="md:hidden">
+        <BottomSheet
+          isOpen={showMobileActions}
+          onClose={() => {
+            setShowMobileActions(false);
+            setActionStudent(null);
+          }}
+          title={actionStudent?.name || '学员操作'}
+        >
+          <div className="p-4 space-y-2">
+            <button
+              onClick={() => {
+                if (!actionStudent) return;
+                setSelectedStudentId(actionStudent.id);
+                setShowMobileActions(false);
+                setActionStudent(null);
+              }}
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 text-left text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              查看详情
+            </button>
+            <button
+              onClick={() => {
+                if (!actionStudent) return;
+                setEditingStudent(actionStudent);
+                setShowForm(true);
+                setShowMobileActions(false);
+                setActionStudent(null);
+              }}
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 text-left text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              编辑学员
+            </button>
+            <button
+              onClick={async () => {
+                if (!actionStudent) return;
+                const id = actionStudent.id;
+                setShowMobileActions(false);
+                setActionStudent(null);
+                await handleDeleteStudent(id);
+              }}
+              className="w-full px-4 py-3 rounded-xl border border-red-200 text-left text-sm font-medium text-red-600 hover:bg-red-50"
+            >
+              删除学员
+            </button>
+          </div>
+        </BottomSheet>
       </div>
 
       {/* Student Form */}
@@ -1020,6 +1500,9 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
           <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => {
             setShowImportModal(false);
             setImportResult(null);
+            setImportSubmitErrors([]);
+            setImportFailedStudents([]);
+            setImportProgress({ processed: 0, total: 0 });
           }} />
           <div className="relative bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between p-4 border-b border-gray-100">
@@ -1028,6 +1511,9 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                 onClick={() => {
                   setShowImportModal(false);
                   setImportResult(null);
+                  setImportSubmitErrors([]);
+                  setImportFailedStudents([]);
+                  setImportProgress({ processed: 0, total: 0 });
                 }}
                 className="p-1 rounded-lg hover:bg-gray-100 transition text-gray-400 hover:text-gray-600"
               >
@@ -1041,6 +1527,9 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                     <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                     <h4 className="text-lg font-medium text-gray-900 mb-2">选择文件导入</h4>
                     <p className="text-sm text-gray-500 mb-4">支持 CSV 和 Excel 格式文件</p>
+                    <p className="text-xs text-gray-500 mb-4">
+                      系统会根据导入成功率自动调节并发（当前并发：{importConcurrency}）
+                    </p>
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -1077,6 +1566,9 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                 </div>
               ) : (
                 <div className="space-y-4">
+                  <p className="text-xs text-gray-500 text-right">
+                    系统自动调节并发（当前并发：{importConcurrency}）
+                  </p>
                   <div className="grid grid-cols-3 gap-4">
                     <div className="bg-gray-50 rounded-xl p-4 text-center">
                       <p className="text-2xl font-bold text-gray-900">{importResult.total}</p>
@@ -1087,15 +1579,45 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                       <p className="text-sm text-emerald-600">成功</p>
                     </div>
                     <div className="bg-red-50 rounded-xl p-4 text-center">
-                      <p className="text-2xl font-bold text-red-600">{importResult.errors.length}</p>
+                      <p className="text-2xl font-bold text-red-600">{importResult.errors.length + importSubmitErrors.length}</p>
                       <p className="text-sm text-red-600">失败</p>
                     </div>
                   </div>
 
-                  {importResult.errors.length > 0 && (
+                  {importing && importProgress.total > 0 && (
+                    <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+                      <div className="flex items-center justify-between text-xs text-indigo-700 mb-2">
+                        <span>处理进度</span>
+                        <span>{importProgress.processed}/{importProgress.total}</span>
+                      </div>
+                      <div className="h-2 bg-indigo-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-600 transition-all"
+                          style={{ width: `${importProgress.total > 0 ? (importProgress.processed / importProgress.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {(importResult.errors.length > 0 || importSubmitErrors.length > 0) && (
                     <div className="border border-red-200 rounded-xl overflow-hidden">
                       <div className="bg-red-50 px-4 py-2 border-b border-red-200">
-                        <h5 className="font-medium text-red-800">错误列表</h5>
+                        <div className="flex items-center justify-between">
+                          <h5 className="font-medium text-red-800">错误列表</h5>
+                          <button
+                            onClick={handleDownloadImportFailures}
+                            className="text-xs px-2 py-1 rounded-lg bg-white border border-red-200 text-red-700 hover:bg-red-50"
+                          >
+                            下载失败明细
+                          </button>
+                          <button
+                            onClick={handleRetryFailedImport}
+                            disabled={importFailedStudents.length === 0 || importing}
+                            className="ml-2 text-xs px-2 py-1 rounded-lg bg-white border border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                          >
+                            重试失败项
+                          </button>
+                        </div>
                       </div>
                       <div className="max-h-60 overflow-y-auto">
                         <table className="w-full text-sm">
@@ -1112,6 +1634,12 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                                 <td className="px-4 py-2 text-red-600">{err.error}</td>
                               </tr>
                             ))}
+                            {importSubmitErrors.map((err, i) => (
+                              <tr key={`submit-${i}`}>
+                                <td className="px-4 py-2 text-gray-600">{`解析后第${err.index}条`}</td>
+                                <td className="px-4 py-2 text-red-600">{err.error}</td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>
@@ -1122,6 +1650,9 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
                     <button
                       onClick={() => {
                         setImportResult(null);
+                        setImportSubmitErrors([]);
+                        setImportFailedStudents([]);
+                        setImportProgress({ processed: 0, total: 0 });
                       }}
                       className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition"
                     >
@@ -1205,6 +1736,272 @@ export default function StudentsPage({ lang, initialHoursFilter }: StudentsPageP
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Save Filter Modal */}
+      {showSaveFilterModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowSaveFilterModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-4">{lang === 'zh' ? '保存筛选条件' : 'Save Filter'}</h3>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {lang === 'zh' ? '筛选名称' : 'Filter Name'}
+              </label>
+              <input
+                type="text"
+                value={filterName}
+                onChange={e => setFilterName(e.target.value)}
+                placeholder={lang === 'zh' ? '输入筛选名称...' : 'Enter filter name...'}
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-3 mb-4">
+              <p className="text-xs text-gray-500 mb-2">{lang === 'zh' ? '当前筛选:' : 'Current filter:'}</p>
+              <div className="flex flex-wrap gap-1">
+                {levelFilter !== 'all' && (
+                  <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs">
+                    {lang === 'zh' ? '级别: ' : 'Level: '}{levelFilter}
+                  </span>
+                )}
+                {statusFilter !== 'all' && (
+                  <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs">
+                    {lang === 'zh' ? '状态: ' : 'Status: '}{statuses.find(s => s.value === statusFilter)?.label}
+                  </span>
+                )}
+                {hoursFilter !== 'all' && (
+                  <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs">
+                    {lang === 'zh' ? '课时: ' : 'Hours: '}{hoursFilter}
+                  </span>
+                )}
+                {tagFilter !== 'all' && (
+                  <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs">
+                    {lang === 'zh' ? '标签: ' : 'Tag: '}{tagFilter}
+                  </span>
+                )}
+                {levelFilter === 'all' && statusFilter === 'all' && hoursFilter === 'all' && tagFilter === 'all' && (
+                  <span className="text-xs text-gray-500">{lang === 'zh' ? '无筛选' : 'No filters'}</span>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowSaveFilterModal(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition"
+              >
+                {lang === 'zh' ? '取消' : 'Cancel'}
+              </button>
+              <button
+                onClick={saveCurrentFilter}
+                disabled={!filterName.trim()}
+                className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {lang === 'zh' ? '保存' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Upgrade Modal */}
+      {showBatchUpgradeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowBatchUpgradeModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-4">批量升班</h3>
+            <p className="text-sm text-gray-500 mb-4">为选中的 {selectedIds.size} 位学员升班</p>
+            
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">新级别</label>
+              <select
+                value={newLevel}
+                onChange={e => setNewLevel(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">请选择级别</option>
+                <option value="Beginner">初级 (Beginner)</option>
+                <option value="Intermediate">中级 (Intermediate)</option>
+                <option value="Advanced">高级 (Advanced)</option>
+              </select>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowBatchUpgradeModal(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleBatchUpgrade}
+                disabled={!newLevel}
+                className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                确认升班
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Renewal Modal */}
+      {showBatchRenewalModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowBatchRenewalModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-4">续费提醒</h3>
+            <p className="text-sm text-gray-500 mb-4">给选中的 {selectedIds.size} 位家长发送续费提醒</p>
+            
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">提醒内容</label>
+              <textarea
+                value={renewalMessage}
+                onChange={e => setRenewalMessage(e.target.value)}
+                placeholder="您好，提醒您孩子课时不足，请及时续费..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                rows={4}
+              />
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowBatchRenewalModal(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleBatchRenewal}
+                className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-medium hover:bg-amber-600 transition"
+              >
+                发送提醒
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Schedule Modal */}
+      {showBatchScheduleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowBatchScheduleModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-bold text-gray-900 mb-4">批量排课</h3>
+            <p className="text-sm text-gray-500 mb-4">为选中的 {selectedIds.size} 位学员安排课程</p>
+            
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">日期</label>
+                <input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={e => setScheduleDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">时间</label>
+                <input
+                  type="time"
+                  value={scheduleTime}
+                  onChange={e => setScheduleTime(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">教师</label>
+                <input
+                  type="text"
+                  value={scheduleTeacher}
+                  onChange={e => setScheduleTeacher(e.target.value)}
+                  placeholder="请输入教师姓名"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">地点</label>
+                <input
+                  type="text"
+                  value={scheduleLocation}
+                  onChange={e => setScheduleLocation(e.target.value)}
+                  placeholder="请输入上课地点"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowBatchScheduleModal(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleBatchSchedule}
+                disabled={!scheduleDate || !scheduleTime || !scheduleTeacher}
+                className="flex-1 py-3 rounded-xl bg-emerald-500 text-white font-medium hover:bg-emerald-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                确认排课
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Message Modal */}
+      {showBatchMessageModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowBatchMessageModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-4">批量发送消息</h3>
+            <p className="text-sm text-gray-500 mb-4">给选中的 {selectedIds.size} 位家长发送消息</p>
+            
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">消息内容</label>
+              <textarea
+                value={batchMessage}
+                onChange={e => setBatchMessage(e.target.value)}
+                placeholder="请输入消息内容..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
+                rows={6}
+              />
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowBatchMessageModal(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleBatchMessage}
+                disabled={!batchMessage.trim()}
+                className="flex-1 py-3 rounded-xl bg-purple-500 text-white font-medium hover:bg-purple-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                发送消息
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Registration Page Modal */}
+      {showRegistration && (
+        <div className="fixed inset-0 z-[60] bg-gray-50">
+          <RegistrationPage
+            lang={lang}
+            onClose={() => {
+              setShowRegistration(false);
+              setRegistrationStudentId(null);
+            }}
+            initialStudentId={registrationStudentId || undefined}
+          />
         </div>
       )}
     </div>

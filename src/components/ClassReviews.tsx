@@ -50,6 +50,11 @@ export default function ClassReviews({ lang }: { lang: Language }) {
     skillRatings: { ...DEFAULT_SKILL_RATINGS },
   });
 
+  const currentTeacher = useMemo(() => {
+    if (!user) return null;
+    return teachers.find((t) => (t as any).userId === user.id || t.name === user.name) || null;
+  }, [teachers, user?.id, user?.name]);
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -71,11 +76,12 @@ export default function ClassReviews({ lang }: { lang: Language }) {
     if (user?.role === 'parent' && myStudent) {
       result = feedbacks.filter(f => f.studentId === myStudent.id);
     } else if (user?.role === 'teacher') {
-      result = feedbacks.filter(f => f.teacherId === user.id);
+      const teacherId = currentTeacher?.id;
+      result = feedbacks.filter(f => f.teacherId === teacherId || f.teacherId === user.id || f.teacherName === user.name);
     }
     
     return result.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [feedbacks, user, myStudent]);
+  }, [feedbacks, user, myStudent, currentTeacher?.id]);
 
   const groupedFeedbacks = useMemo(() => {
     const groups: { [key: string]: Feedback[] } = {
@@ -119,7 +125,7 @@ export default function ClassReviews({ lang }: { lang: Language }) {
       await api.addFeedback({
         courseId: newFeedback.courseId || 'general',
         studentId: newFeedback.studentId,
-        teacherId: user?.id || '',
+        teacherId: currentTeacher?.id || user?.id || '',
         content: newFeedback.content,
         homework: newFeedback.homework,
         rating: newFeedback.rating,
@@ -144,19 +150,23 @@ export default function ClassReviews({ lang }: { lang: Language }) {
 
   const myStudents = useMemo(() => {
     if (user?.role !== 'teacher') return [];
+    const teacherId = currentTeacher?.id;
     const myCourseStudentIds = new Set(
-      courses.filter(c => c.teacherId === user.id).map(c => c.studentId)
+      courses
+        .filter(c => c.teacherId === teacherId || c.teacherId === user.id || c.teacherName === user.name)
+        .map(c => c.studentId)
     );
     return students.filter(s => myCourseStudentIds.has(s.id));
-  }, [courses, students, user]);
+  }, [courses, students, user, currentTeacher?.id]);
 
   const recentCourses = useMemo(() => {
     if (user?.role !== 'teacher') return [];
+    const teacherId = currentTeacher?.id;
     return courses
-      .filter(c => c.teacherId === user.id && c.status === 'completed')
+      .filter(c => (c.teacherId === teacherId || c.teacherId === user.id || c.teacherName === user.name) && c.status === 'completed')
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
       .slice(0, 10);
-  }, [courses, user]);
+  }, [courses, user, currentTeacher?.id]);
 
   const renderSkillRating = (rating: number) => {
     return (

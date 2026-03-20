@@ -5,6 +5,7 @@ import { useTranslation } from '../i18n';
 import { useToast } from './Toast';
 import BottomSheet from './BottomSheet';
 import { format, parseISO, differenceInDays } from 'date-fns';
+import { apiRequest } from '../services/api';
 
 interface Lead {
   id: string;
@@ -67,10 +68,8 @@ export default function LeadsPage({ lang }: { lang: Language }) {
   const fetchLeads = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/leads', { credentials: 'include' });
-      if (response.ok) {
-        setLeads(await response.json());
-      }
+      const data = await apiRequest<Lead[]>('/api/leads');
+      setLeads(data);
     } catch (error) {
       console.error('Failed to fetch leads:', error);
     } finally {
@@ -105,35 +104,32 @@ export default function LeadsPage({ lang }: { lang: Language }) {
     }
 
     try {
-      const response = await fetch('/api/leads', {
+      await apiRequest<Lead>('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           ...newLead,
           createdAt: new Date().toISOString(),
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '线索已添加' : 'Lead added', 'success');
-        setShowForm(false);
-        setNewLead({
-          name: '',
-          phone: '',
-          source: 'wechat',
-          notes: '',
-          status: 'new',
-          trialDate: '',
-          nextFollowUp: '',
-          trialTime: '',
-          trialTeacherId: '',
-          trialCourse: '',
-          trialNotes: '',
-          trialStatus: 'scheduled',
-        });
-        fetchLeads();
-      }
+      showToast(lang === 'zh' ? '线索已添加' : 'Lead added', 'success');
+      setShowForm(false);
+      setNewLead({
+        name: '',
+        phone: '',
+        source: 'wechat',
+        notes: '',
+        status: 'new',
+        trialDate: '',
+        nextFollowUp: '',
+        trialTime: '',
+        trialTeacherId: '',
+        trialCourse: '',
+        trialNotes: '',
+        trialStatus: 'scheduled',
+      });
+      fetchLeads();
     } catch (error) {
       showToast(lang === 'zh' ? '添加失败' : 'Failed to add', 'error');
     }
@@ -141,17 +137,14 @@ export default function LeadsPage({ lang }: { lang: Language }) {
 
   const handleUpdateStatus = async (id: string, status: Lead['status']) => {
     try {
-      const response = await fetch(`/api/leads/${id}`, {
+      await apiRequest<Lead>(`/api/leads/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ status }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '状态已更新' : 'Status updated', 'success');
-        fetchLeads();
-      }
+      showToast(lang === 'zh' ? '状态已更新' : 'Status updated', 'success');
+      fetchLeads();
     } catch (error) {
       showToast(lang === 'zh' ? '更新失败' : 'Failed to update', 'error');
     }
@@ -164,10 +157,9 @@ export default function LeadsPage({ lang }: { lang: Language }) {
     }
 
     try {
-      const response = await fetch(`/api/leads/${selectedLead.id}/trial`, {
+      await apiRequest<Lead>(`/api/leads/${selectedLead.id}/trial`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           trialDate: newLead.trialDate,
           trialTime: newLead.trialTime,
@@ -177,12 +169,10 @@ export default function LeadsPage({ lang }: { lang: Language }) {
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '试听课已安排' : 'Trial scheduled', 'success');
-        setShowDetail(false);
-        setSelectedLead(null);
-        fetchLeads();
-      }
+      showToast(lang === 'zh' ? '试听课已安排' : 'Trial scheduled', 'success');
+      setShowDetail(false);
+      setSelectedLead(null);
+      fetchLeads();
     } catch (error) {
       showToast(lang === 'zh' ? '安排失败' : 'Failed to schedule', 'error');
     }

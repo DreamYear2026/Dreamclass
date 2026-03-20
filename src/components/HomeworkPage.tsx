@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BookOpen, Plus, Clock, CheckCircle, XCircle, AlertTriangle, Star, Loader2, ChevronRight, FileText, Image, Video, Send, MessageSquare, ThumbsUp, Award, Sparkles, Heart, Calendar, Upload } from 'lucide-react';
 import { Language } from '../types';
 import { useTranslation } from '../i18n';
@@ -8,6 +8,7 @@ import { useToast } from './Toast';
 import { format, parseISO, isToday, isPast, addDays, isTomorrow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import BottomSheet from './BottomSheet';
+import { api } from '../services/api';
 
 interface Homework {
   id: string;
@@ -101,10 +102,10 @@ export default function HomeworkPage({ lang }: { lang: Language }) {
 
   const isParent = user?.role === 'parent';
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'submitted' | 'graded'>('all');
-  const [homeworkList, setHomeworkList] = useState<Homework[]>(mockHomework);
+  const [homeworkList, setHomeworkList] = useState<Homework[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [selectedHomework, setSelectedHomework] = useState<Homework | null>(null);
-  const [loading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [submissionContent, setSubmissionContent] = useState('');
 
   const [newHomework, setNewHomework] = useState({
@@ -119,6 +120,54 @@ export default function HomeworkPage({ lang }: { lang: Language }) {
     return homeworkList.filter(h => h.status === activeTab);
   }, [homeworkList, activeTab]);
 
+  const loadHomeworks = useCallback(async () => {
+    try {
+      setLoading(true);
+      const all = await api.getHomeworks();
+      const parentStudentIds = isParent
+        ? new Set(students.filter((s) => s.userId === user?.id).map((s) => s.id))
+        : null;
+      const scoped = all.filter((h) => {
+        if (isParent) return parentStudentIds?.has(h.studentId);
+        if (user?.role === 'teacher') return h.teacherId === user.id || h.teacherName === user.name;
+        return true;
+      });
+      const mapped: Homework[] = scoped.map((h) => ({
+        id: h.id,
+        title: h.title,
+        description: h.description,
+        teacherId: h.teacherId,
+        teacherName: h.teacherName,
+        studentId: h.studentId,
+        studentName: h.studentName,
+        courseId: h.courseId,
+        createdAt: h.createdAt,
+        dueDate: h.dueDate,
+        status: h.status === 'reviewed' ? 'graded' : h.status,
+        attachments: [],
+        submission: h.submittedContent ? {
+          content: h.submittedContent,
+          attachments: h.submittedFiles || [],
+          submittedAt: h.submittedAt || h.createdAt,
+        } : undefined,
+        grade: h.rating ? {
+          score: h.rating,
+          feedback: h.reviewComment || '',
+          gradedAt: h.reviewedAt || h.createdAt,
+        } : undefined,
+      }));
+      setHomeworkList(mapped);
+    } catch {
+      setHomeworkList([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [isParent, students, user?.id, user?.role, user?.name]);
+
+  useEffect(() => {
+    void loadHomeworks();
+  }, [loadHomeworks]);
+
   const stats = useMemo(() => ({
     total: homeworkList.length,
     pending: homeworkList.filter(h => h.status === 'pending').length,
@@ -127,75 +176,66 @@ export default function HomeworkPage({ lang }: { lang: Language }) {
     overdue: homeworkList.filter(h => h.status === 'pending' && isPast(parseISO(h.dueDate))).length
   }), [homeworkList]);
 
-  const handleCreateHomework = () => {
+  const handleCreateHomework = async () => {
     if (!newHomework.title || !newHomework.studentId) {
       showToast(lang === 'zh' ? '请填写完整信息' : 'Please fill all fields', 'error');
       return;
     }
 
     const student = students.find(s => s.id === newHomework.studentId);
-    const homework: Homework = {
-      id: `h${Date.now()}`,
-      title: newHomework.title,
-      description: newHomework.description,
-      teacherId: 'current-teacher',
-      teacherName: '当前教师',
-      studentId: newHomework.studentId,
-      studentName: student?.name || '',
-      createdAt: new Date().toISOString(),
-      dueDate: new Date(newHomework.dueDate).toISOString(),
-      status: 'pending',
-      attachments: []
-    };
-
-    setHomeworkList([homework, ...homeworkList]);
-    setShowCreateForm(false);
-    setNewHomework({ title: '', description: '', studentId: '', dueDate: format(addDays(new Date(), 7), 'yyyy-MM-dd') });
-    showToast(lang === 'zh' ? '作业发布成功' : 'Homework assigned', 'success');
+    try {
+      await api.addHomework({
+        studentId: newHomework.studentId,
+        studentName: student?.name || '',
+        title: newHomework.title,
+        description: newHomework.description,
+        dueDate: new Date(newHomework.dueDate).toISOString(),
+      });
+      await loadHomeworks();
+      setShowCreateForm(false);
+      setNewHomework({ title: '', description: '', studentId: '', dueDate: format(addDays(new Date(), 7), 'yyyy-MM-dd') });
+      showToast(lang === 'zh' ? '作业发布成功' : 'Homework assigned', 'success');
+    } catch {
+      showToast(lang === 'zh' ? '作业发布失败' : 'Failed to assign homework', 'error');
+    }
   };
 
-  const handleGradeHomework = (homeworkId: string, score: number, feedback: string) => {
-    setHomeworkList(prev => prev.map(h => {
-      if (h.id === homeworkId) {
-        return {
-          ...h,
-          status: 'graded' as const,
-          grade: {
-            score,
-            feedback,
-            gradedAt: new Date().toISOString()
-          }
-        };
-      }
-      return h;
-    }));
-    setSelectedHomework(null);
-    showToast(lang === 'zh' ? '批改完成' : 'Graded successfully', 'success');
+  const handleGradeHomework = async (homeworkId: string, score: number, feedback: string) => {
+    try {
+      await api.reviewHomework(homeworkId, {
+        reviewComment: feedback,
+        rating: score,
+        reviewedAt: new Date().toISOString(),
+        status: 'reviewed',
+      });
+      await loadHomeworks();
+      setSelectedHomework(null);
+      showToast(lang === 'zh' ? '批改完成' : 'Graded successfully', 'success');
+    } catch {
+      showToast(lang === 'zh' ? '批改失败' : 'Failed to grade', 'error');
+    }
   };
 
-  const handleSubmitHomework = () => {
+  const handleSubmitHomework = async () => {
     if (!submissionContent.trim()) {
       showToast(lang === 'zh' ? '请输入提交内容' : 'Please enter submission content', 'error');
       return;
     }
     
     if (selectedHomework) {
-      setHomeworkList(prev => prev.map(h => {
-        if (h.id === selectedHomework.id) {
-          return {
-            ...h,
-            status: 'submitted' as const,
-            submission: {
-              content: submissionContent,
-              submittedAt: new Date().toISOString()
-            }
-          };
-        }
-        return h;
-      }));
-      setSelectedHomework(null);
-      setSubmissionContent('');
-      showToast(lang === 'zh' ? '提交成功' : 'Submitted successfully', 'success');
+      try {
+        await api.submitHomework(selectedHomework.id, {
+          submittedContent: submissionContent,
+          submittedAt: new Date().toISOString(),
+          status: 'submitted',
+        });
+        await loadHomeworks();
+        setSelectedHomework(null);
+        setSubmissionContent('');
+        showToast(lang === 'zh' ? '提交成功' : 'Submitted successfully', 'success');
+      } catch {
+        showToast(lang === 'zh' ? '提交失败' : 'Failed to submit', 'error');
+      }
     }
   };
 
@@ -327,7 +367,11 @@ export default function HomeworkPage({ lang }: { lang: Language }) {
       </div>
 
       <div className="space-y-3">
-        {filteredHomework.length === 0 ? (
+        {loading ? (
+          <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+            {lang === 'zh' ? '作业加载中...' : 'Loading homework...'}
+          </div>
+        ) : filteredHomework.length === 0 ? (
           <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-12 text-center">
             <div className="w-20 h-20 rounded-full bg-gradient-to-br from-[#4ECDC4]/10 to-[#7EDDD6]/10 flex items-center justify-center mx-auto mb-4">
               <BookOpen className="w-10 h-10 text-[#4ECDC4]" />

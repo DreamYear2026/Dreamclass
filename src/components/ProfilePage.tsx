@@ -68,7 +68,7 @@ function checkPasswordStrength(password: string): { score: number; label: string
 
 export default function ProfilePage({ lang }: { lang: Language }) {
   const { t } = useTranslation(lang);
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
   const { students } = useStudents();
   const { courses } = useCourses();
   const { teachers } = useTeachers();
@@ -76,11 +76,13 @@ export default function ProfilePage({ lang }: { lang: Language }) {
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);
+  const [showHelpCenter, setShowHelpCenter] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'password' | 'preferences' | 'account'>('password');
   const [formData, setFormData] = useState({
     name: user?.name || '',
     email: user?.email || '',
     phone: user?.phone || '',
+    avatar: user?.avatar || '',
   });
   const [passwordData, setPasswordData] = useState({
     currentPassword: '',
@@ -100,8 +102,29 @@ export default function ProfilePage({ lang }: { lang: Language }) {
       name: user?.name || '',
       email: user?.email || '',
       phone: user?.phone || '',
+      avatar: user?.avatar || '',
     });
   }, [user]);
+
+  const handleAvatarFile = async (file: File) => {
+    setLoading(true);
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      const res = await fetch('/api/upload', { method: 'POST', body, credentials: 'include' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setFormData((prev) => ({ ...prev, avatar: data.url }));
+      showToast(lang === 'zh' ? '头像已上传' : 'Avatar uploaded', 'success');
+    } catch (error: any) {
+      showToast(error.message || (lang === 'zh' ? '上传失败' : 'Upload failed'), 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleUpdateProfile = async () => {
     if (!formData.name.trim()) {
@@ -112,6 +135,7 @@ export default function ProfilePage({ lang }: { lang: Language }) {
     setLoading(true);
     try {
       await api.updateCurrentUser(formData);
+      await refreshUser();
       showToast(lang === 'zh' ? '个人信息更新成功' : 'Profile updated successfully', 'success');
       setShowEditProfile(false);
     } catch (error: any) {
@@ -259,7 +283,7 @@ export default function ProfilePage({ lang }: { lang: Language }) {
       label: lang === 'zh' ? '帮助中心' : 'Help Center', 
       description: lang === 'zh' ? '常见问题解答' : 'FAQ and support',
       color: 'from-[#74B9FF] to-[#A8E6CF]',
-      onClick: () => showToast(lang === 'zh' ? '帮助中心开发中' : 'Help center coming soon', 'info')
+      onClick: () => setShowHelpCenter(true)
     },
   ];
 
@@ -279,9 +303,18 @@ export default function ProfilePage({ lang }: { lang: Language }) {
           <div className="absolute -bottom-14 left-1/2 transform -translate-x-1/2">
             <div className="relative">
               <div className="w-28 h-28 md:w-32 md:h-32 bg-white rounded-full border-4 border-white shadow-xl flex items-center justify-center">
-                <span className="text-4xl md:text-5xl font-bold bg-gradient-to-br from-[#FF6B6B] to-[#4ECDC4] bg-clip-text text-transparent">
-                  {user?.name?.charAt(0) || 'U'}
-                </span>
+                {user?.avatar ? (
+                  <img
+                    src={user.avatar}
+                    alt={user.name}
+                    className="w-28 h-28 md:w-32 md:h-32 rounded-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <span className="text-4xl md:text-5xl font-bold bg-gradient-to-br from-[#FF6B6B] to-[#4ECDC4] bg-clip-text text-transparent">
+                    {user?.name?.charAt(0) || 'U'}
+                  </span>
+                )}
               </div>
               <div className="absolute bottom-1 right-1 w-8 h-8 bg-[#95E1A3] rounded-full border-2 border-white flex items-center justify-center">
                 <Check className="w-4 h-4 text-white" />
@@ -369,6 +402,48 @@ export default function ProfilePage({ lang }: { lang: Language }) {
         title={lang === 'zh' ? '编辑个人资料' : 'Edit Profile'}
       >
         <div className="p-5 space-y-5">
+          <div className="bg-gray-50 rounded-2xl p-4 border border-gray-200">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-full bg-white border border-gray-200 overflow-hidden flex items-center justify-center">
+                {formData.avatar ? (
+                  <img
+                    src={formData.avatar}
+                    alt={formData.name}
+                    className="w-16 h-16 rounded-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <span className="text-xl font-bold text-gray-500">{formData.name?.charAt(0) || 'U'}</span>
+                )}
+              </div>
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-2">{lang === 'zh' ? '头像' : 'Avatar'}</label>
+                <div className="flex items-center gap-2">
+                  <label className="px-3 py-2 rounded-xl border-2 border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer transition-all">
+                    {lang === 'zh' ? '选择图片' : 'Choose'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleAvatarFile(file);
+                        e.currentTarget.value = '';
+                      }}
+                    />
+                  </label>
+                  <button
+                    onClick={() => setFormData((prev) => ({ ...prev, avatar: '' }))}
+                    className="px-3 py-2 rounded-xl border-2 border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 transition-all"
+                  >
+                    {lang === 'zh' ? '移除' : 'Remove'}
+                  </button>
+                </div>
+                {formData.avatar && <p className="mt-2 text-xs text-gray-500 break-all">{formData.avatar}</p>}
+              </div>
+            </div>
+          </div>
+
           <div className="bg-gradient-to-br from-[#FF6B6B]/5 to-[#FF8E8E]/5 rounded-2xl p-4 border border-[#FF6B6B]/10">
             <label className="block text-sm font-medium text-gray-700 mb-2">
               <User className="w-4 h-4 inline mr-1" />
@@ -690,6 +765,62 @@ export default function ProfilePage({ lang }: { lang: Language }) {
               </div>
             </div>
           )}
+        </div>
+      </BottomSheet>
+
+      <BottomSheet
+        isOpen={showHelpCenter}
+        onClose={() => setShowHelpCenter(false)}
+        title={lang === 'zh' ? '帮助中心' : 'Help Center'}
+      >
+        <div className="p-5 space-y-4">
+          <div className="space-y-3">
+            <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+              <HelpCircle className="w-5 h-5 text-[#74B9FF]" />
+              {lang === 'zh' ? '常见问题' : 'Frequently Asked Questions'}
+            </h3>
+            
+            <div className="space-y-3">
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl p-4 border border-gray-100">
+                <h4 className="font-medium text-gray-900 mb-2">{lang === 'zh' ? '如何添加新学员？' : 'How to add a new student?'}</h4>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '前往学员管理页面，点击右上角的「添加学员」按钮，填写学员信息后保存即可。' : 'Go to the Students page, click the "Add Student" button in the top right corner, fill in the student information and save.'}</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl p-4 border border-gray-100">
+                <h4 className="font-medium text-gray-900 mb-2">{lang === 'zh' ? '如何办理报名续课？' : 'How to handle registration and renewal?'}</h4>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '前往办理报名续课页面，选择学员和课程，填写相关信息后即可办理。' : 'Go to the Registration page, select the student and course, fill in the relevant information and process.'}</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl p-4 border border-gray-100">
+                <h4 className="font-medium text-gray-900 mb-2">{lang === 'zh' ? '如何修改个人信息？' : 'How to update personal information?'}</h4>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '在当前页面点击「个人资料」，可以编辑您的姓名、邮箱和电话号码。' : 'Click "Profile" on this page to edit your name, email, and phone number.'}</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl p-4 border border-gray-100">
+                <h4 className="font-medium text-gray-900 mb-2">{lang === 'zh' ? '数据会自动保存吗？' : 'Is data automatically saved?'}</h4>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '是的，您的数据会自动保存到本地存储中，刷新页面后数据不会丢失。' : 'Yes, your data is automatically saved to local storage and will not be lost after refreshing the page.'}</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl p-4 border border-gray-100">
+                <h4 className="font-medium text-gray-900 mb-2">{lang === 'zh' ? '如何联系客服？' : 'How to contact customer service?'}</h4>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '如有任何问题，请通过邮箱 support@dreamyear.com 联系我们。' : 'If you have any questions, please contact us at support@dreamyear.com.'}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-gray-100">
+            <div className="bg-gradient-to-br from-[#74B9FF]/10 to-[#A8E6CF]/10 rounded-2xl p-4 border border-[#74B9FF]/20">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#74B9FF] to-[#A8E6CF] flex items-center justify-center flex-shrink-0">
+                  <Heart className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-gray-900 mb-1">{lang === 'zh' ? '感谢使用 DreamYear' : 'Thank you for using DreamYear'}</h4>
+                  <p className="text-sm text-gray-600">{lang === 'zh' ? '我们致力于为您提供最好的教育管理体验。' : 'We are committed to providing you with the best educational management experience.'}</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </BottomSheet>
     </div>

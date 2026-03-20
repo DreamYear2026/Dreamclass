@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { X, Sparkles, Clock, User, MapPin, AlertTriangle, Check, Calendar, ChevronLeft, ChevronRight, Loader2, Zap } from 'lucide-react';
-import { format, addDays, startOfWeek, addWeeks, isAfter, isBefore, isToday, parseISO, isSameDay } from 'date-fns';
+import { X, Sparkles, Clock, User, MapPin, AlertTriangle, Check, Calendar, ChevronLeft, ChevronRight, Loader2, Zap, Copy, Calendar as CalendarIcon, TrendingUp, Layers } from 'lucide-react';
+import { format, addDays, startOfWeek, addWeeks, isAfter, isBefore, isToday, parseISO, isSameDay, isSameMonth, isWithinInterval, subDays } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useStudents, useTeachers, useCourses } from '../contexts/AppContext';
 import { api } from '../services/api';
@@ -19,6 +19,20 @@ interface TimeSlot {
   teacherAvailable: boolean;
   roomAvailable: boolean;
   studentAvailable: boolean;
+  isHoliday: boolean;
+}
+
+interface ScheduleTemplate {
+  id: string;
+  name: string;
+  title: string;
+  teacherId: string;
+  studentIds: string[];
+  preferredDays: number[];
+  preferredTimeStart: number;
+  preferredTimeEnd: number;
+  duration: number;
+  room: string;
 }
 
 export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerProps) {
@@ -45,6 +59,68 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
   const [recommendedSlots, setRecommendedSlots] = useState<TimeSlot[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<TimeSlot | null>(null);
   const [currentWeekStart, setCurrentWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
+  const [useTemplate, setUseTemplate] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<ScheduleTemplate | null>(null);
+  
+  const holidays = useMemo(() => {
+    const year = new Date().getFullYear();
+    return [
+      `${year}-01-01`,
+      `${year}-02-14`,
+      `${year}-03-08`,
+      `${year}-05-01`,
+      `${year}-06-01`,
+      `${year}-10-01`,
+      `${year}-12-25`,
+      `${year + 1}-01-01`,
+    ];
+  }, []);
+  
+  const isHoliday = (date: Date) => {
+    const dateStr = format(date, 'yyyy-MM-dd');
+    const day = date.getDay();
+    if (day === 0 || day === 6) return false;
+    return holidays.includes(dateStr);
+  };
+  
+  const scheduleTemplates: ScheduleTemplate[] = [
+    {
+      id: 'template1',
+      name: '钢琴常规课程',
+      title: '钢琴一对一',
+      teacherId: '',
+      studentIds: [],
+      preferredDays: [1, 3, 5],
+      preferredTimeStart: 16,
+      preferredTimeEnd: 20,
+      duration: 60,
+      room: '琴房 1',
+    },
+    {
+      id: 'template2',
+      name: '周末舞蹈课程',
+      title: '舞蹈集体课',
+      teacherId: '',
+      studentIds: [],
+      preferredDays: [6, 7],
+      preferredTimeStart: 10,
+      preferredTimeEnd: 16,
+      duration: 90,
+      room: '舞蹈室',
+    },
+    {
+      id: 'template3',
+      name: '美术创意课程',
+      title: '美术课',
+      teacherId: '',
+      studentIds: [],
+      preferredDays: [2, 4, 6],
+      preferredTimeStart: 14,
+      preferredTimeEnd: 18,
+      duration: 60,
+      room: '美术室',
+    },
+  ];
 
   const activeTeachers = teachers.filter(t => t.status === 'active');
   const selectedStudent = students.find(s => s.id === formData.studentId);
@@ -67,6 +143,7 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
         for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
           const date = addWeeks(addDays(currentWeekStart, dayOffset), week);
           const dayOfWeek = date.getDay();
+          const holidayFlag = isHoliday(date);
           
           if (formData.preferredDays.length > 0 && !formData.preferredDays.includes(dayOfWeek === 0 ? 7 : dayOfWeek)) {
             continue;
@@ -79,6 +156,11 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
             
             const conflicts: string[] = [];
             let score = 100;
+            
+            if (holidayFlag) {
+              conflicts.push('该日期为节假日');
+              score -= 80;
+            }
             
             const teacherConflict = allCourses.find(c => 
               c.date === dateStr &&
@@ -115,7 +197,7 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
             if (hour >= 14 && hour <= 16) score += 15;
             if (hour >= 19 && hour <= 20) score += 5;
             
-            if (dayOfWeek === 6 || dayOfWeek === 0) score -= 5;
+            if (dayOfWeek === 6 || dayOfWeek === 0) score += 20;
             
             if (isToday(date)) score -= 30;
             if (isBefore(date, new Date())) score = 0;
@@ -129,6 +211,7 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
                 teacherAvailable: !teacherConflict,
                 roomAvailable: occupiedRooms.size < 10,
                 studentAvailable: !studentConflict,
+                isHoliday: holidayFlag,
               });
             }
           }
@@ -147,6 +230,20 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
     } finally {
       setAnalyzing(false);
     }
+  };
+  
+  const applyTemplate = (template: ScheduleTemplate) => {
+    setSelectedTemplate(template);
+    setFormData({
+      ...formData,
+      title: template.title,
+      preferredDays: template.preferredDays,
+      preferredTimeStart: template.preferredTimeStart,
+      preferredTimeEnd: template.preferredTimeEnd,
+      duration: template.duration,
+    });
+    setUseTemplate(false);
+    showToast('已应用模板', 'success');
   };
 
   const handleSchedule = async () => {
@@ -210,8 +307,48 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
                 <Zap className="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" />
                 <div className="text-sm text-indigo-700">
                   <p className="font-medium mb-1">智能排课说明</p>
-                  <p>系统将自动分析教师和学员的时间安排，检测冲突并推荐最佳上课时间。</p>
+                  <p>系统将自动分析教师和学员的时间安排，检测三方冲突（教师、学员、教室）并推荐最佳上课时间。</p>
                 </div>
+              </div>
+
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setUseTemplate(!useTemplate)}
+                  className="w-full p-4 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition"
+                >
+                  <div className="flex items-center gap-3">
+                    <Layers className="w-5 h-5 text-purple-600" />
+                    <span className="font-medium text-gray-900">使用批量排课模板</span>
+                  </div>
+                  <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition ${
+                    useTemplate ? 'bg-purple-600 border-purple-600' : 'border-gray-300'
+                  }`}>
+                    {useTemplate && <Check className="w-3 h-3 text-white" />}
+                  </span>
+                </button>
+                
+                {useTemplate && (
+                  <div className="p-4 border-t border-gray-200 bg-white">
+                    <p className="text-sm text-gray-600 mb-3">选择一个模板快速配置：</p>
+                    <div className="grid gap-2">
+                      {scheduleTemplates.map(template => (
+                        <button
+                          key={template.id}
+                          onClick={() => applyTemplate(template)}
+                          className="p-3 border border-gray-200 rounded-lg text-left hover:border-purple-300 hover:bg-purple-50 transition flex items-center justify-between"
+                        >
+                          <div>
+                            <p className="font-medium text-gray-900">{template.name}</p>
+                            <p className="text-xs text-gray-500 mt-1">
+                              {template.preferredDays.map(d => ['一', '二', '三', '四', '五', '六', '日'][d - 1]).join('、')} · {template.preferredTimeStart}:00-{template.preferredTimeEnd}:00
+                            </p>
+                          </div>
+                          <Copy className="w-4 h-4 text-gray-400" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid md:grid-cols-2 gap-4">
@@ -402,17 +539,22 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
                             }`}
                           >
                             <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                                  slot.score >= 80 ? 'bg-green-100 text-green-600' :
-                                  slot.score >= 50 ? 'bg-amber-100 text-amber-600' :
-                                  'bg-red-100 text-red-600'
-                                }`}>
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                                    slot.score >= 80 ? 'bg-green-100 text-green-600' :
+                                    slot.score >= 50 ? 'bg-amber-100 text-amber-600' :
+                                    'bg-red-100 text-red-600'
+                                  }`}>
                                   <span className="text-sm font-bold">{slot.score}</span>
                                 </div>
                                 <div>
-                                  <p className="font-medium text-gray-900">
+                                  <p className="font-medium text-gray-900 flex items-center gap-2">
                                     {format(slot.date, 'M月d日 EEEE', { locale: zhCN })}
+                                    {slot.isHoliday && (
+                                      <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded-full">
+                                        节假日
+                                      </span>
+                                    )}
                                   </p>
                                   <p className="text-sm text-gray-500">
                                     {slot.hour}:00 - {slot.hour + 1}:00
@@ -420,13 +562,15 @@ export default function SmartScheduler({ onClose, onSchedule }: SmartSchedulerPr
                                 </div>
                               </div>
                               <div className="flex items-center gap-2">
-                                {slot.teacherAvailable && slot.studentAvailable ? (
-                                  <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
-                                    无冲突
+                                {slot.teacherAvailable && slot.studentAvailable && !slot.isHoliday ? (
+                                  <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full flex items-center gap-1">
+                                    <Check className="w-3 h-3" />
+                                    推荐
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-1 bg-amber-100 text-amber-700 text-xs rounded-full">
-                                    有冲突
+                                  <span className="px-2 py-1 bg-amber-100 text-amber-700 text-xs rounded-full flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    注意
                                   </span>
                                 )}
                               </div>

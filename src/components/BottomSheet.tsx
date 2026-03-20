@@ -4,7 +4,7 @@ import { X } from 'lucide-react';
 interface BottomSheetProps {
   isOpen: boolean;
   onClose: () => void;
-  title?: string;
+  title?: React.ReactNode;
   children: React.ReactNode;
 }
 
@@ -48,7 +48,7 @@ export default function BottomSheet({ isOpen, onClose, title, children }: Bottom
           
           {title && (
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-              <h3 className="text-lg font-bold text-gray-900">{title}</h3>
+              <div className="text-lg font-bold text-gray-900">{title}</div>
               <button 
                 onClick={handleClose}
                 className="p-2 rounded-full hover:bg-gray-100 transition"

@@ -9,6 +9,7 @@ import { parseISO, format, differenceInDays, isAfter, isBefore } from 'date-fns'
 import { zhCN } from 'date-fns/locale';
 import BottomSheet from './BottomSheet';
 import { useToast } from './Toast';
+import { apiRequest } from '../services/api';
 
 const SKILL_CATEGORIES = [
   { id: 'technique', nameZh: '演奏技巧', nameEn: 'Technique', icon: '🎹' },
@@ -56,15 +57,15 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
   const fetchProgressData = async (studentId: string) => {
     try {
       setLoading(true);
-      const [progressRes, goalsRes, practiceRes] = await Promise.all([
-        fetch(`/api/student-progress/${studentId}`, { credentials: 'include' }),
-        fetch(`/api/learning-goals/${studentId}`, { credentials: 'include' }),
-        fetch(`/api/practice-records/${studentId}`, { credentials: 'include' }),
+      const [progressData, goalsData, practiceData] = await Promise.all([
+        apiRequest<StudentProgress[]>(`/api/student-progress/${studentId}`),
+        apiRequest<LearningGoal[]>(`/api/learning-goals/${studentId}`),
+        apiRequest<PracticeRecord[]>(`/api/practice-records/${studentId}`),
       ]);
-      
-      if (progressRes.ok) setProgress(await progressRes.json());
-      if (goalsRes.ok) setGoals(await goalsRes.json());
-      if (practiceRes.ok) setPracticeRecords(await practiceRes.json());
+
+      setProgress(progressData);
+      setGoals(goalsData);
+      setPracticeRecords(practiceData);
     } catch (error) {
       console.error('Failed to fetch progress data:', error);
     } finally {
@@ -100,22 +101,19 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
     }
 
     try {
-      const response = await fetch('/api/learning-goals', {
+      await apiRequest<LearningGoal>('/api/learning-goals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           studentId: targetStudentId,
           ...newGoal,
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '目标已添加' : 'Goal added', 'success');
-        setShowGoalForm(false);
-        setNewGoal({ title: '', description: '', targetDate: '' });
-        fetchProgressData(targetStudentId);
-      }
+      showToast(lang === 'zh' ? '目标已添加' : 'Goal added', 'success');
+      setShowGoalForm(false);
+      setNewGoal({ title: '', description: '', targetDate: '' });
+      fetchProgressData(targetStudentId);
     } catch (error) {
       showToast(lang === 'zh' ? '添加失败' : 'Failed to add', 'error');
     }
@@ -125,10 +123,9 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
     if (!targetStudentId) return;
 
     try {
-      const response = await fetch('/api/practice-records', {
+      await apiRequest<PracticeRecord>('/api/practice-records', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           studentId: targetStudentId,
           date: new Date().toISOString().split('T')[0],
@@ -138,12 +135,10 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '练习记录已添加' : 'Practice recorded', 'success');
-        setShowPracticeForm(false);
-        setNewPractice({ duration: 30, pieces: '', notes: '' });
-        fetchProgressData(targetStudentId);
-      }
+      showToast(lang === 'zh' ? '练习记录已添加' : 'Practice recorded', 'success');
+      setShowPracticeForm(false);
+      setNewPractice({ duration: 30, pieces: '', notes: '' });
+      fetchProgressData(targetStudentId);
     } catch (error) {
       showToast(lang === 'zh' ? '添加失败' : 'Failed to add', 'error');
     }
@@ -151,14 +146,13 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
 
   const handleCompleteGoal = async (goalId: string) => {
     try {
-      const response = await fetch(`/api/learning-goals/${goalId}`, {
+      await apiRequest<LearningGoal>(`/api/learning-goals/${goalId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ status: 'completed' }),
       });
 
-      if (response.ok && targetStudentId) {
+      if (targetStudentId) {
         showToast(lang === 'zh' ? '目标已完成' : 'Goal completed', 'success');
         fetchProgressData(targetStudentId);
       }
@@ -328,7 +322,8 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
         ) : (
           <div className="space-y-3">
             {activeGoals.map(goal => {
-              const daysLeft = differenceInDays(parseISO(goal.deadline), new Date());
+              const targetDate = goal.targetDate || goal.createdAt;
+              const daysLeft = differenceInDays(parseISO(targetDate), new Date());
               const isUrgent = daysLeft <= 7 && daysLeft > 0;
               const isOverdue = daysLeft < 0;
 
@@ -343,10 +338,10 @@ export default function StudentProgressPage({ lang }: { lang: Language }) {
                 >
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="font-medium text-gray-900">{goal.skillName}</p>
-                      <p className="text-sm text-gray-600 mt-1">
-                        {lang === 'zh' ? '目标等级' : 'Target Level'}: {goal.targetLevel} | {lang === 'zh' ? '当前' : 'Current'}: {goal.currentLevel}
-                      </p>
+                      <p className="font-medium text-gray-900">{goal.title}</p>
+                      {goal.description && (
+                        <p className="text-sm text-gray-600 mt-1">{goal.description}</p>
+                      )}
                       <p className={`text-xs mt-2 ${
                         isOverdue ? 'text-red-600' : isUrgent ? 'text-amber-600' : 'text-gray-500'
                       }`}>

@@ -7,6 +7,8 @@ interface AuthContextType {
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  setUser: (user: User | null) => void;
   isAuthenticated: boolean;
 }
 
@@ -40,12 +42,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const refreshUser = useCallback(async () => {
+    const currentUser = await api.getCurrentUser();
+    setUser(currentUser);
+  }, []);
+
   return (
     <AuthContext.Provider value={{ 
       user, 
       loading, 
       login, 
       logout, 
+      refreshUser,
+      setUser,
       isAuthenticated: !!user 
     }}>
       {children}

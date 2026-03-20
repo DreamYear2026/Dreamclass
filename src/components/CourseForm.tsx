@@ -1,13 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import { X, Calendar, Clock, User, BookOpen, MapPin, Repeat, Sparkles, Heart, Star, ChevronRight } from 'lucide-react';
-import { Course } from '../types';
+import { Course, Role } from '../types';
 import { api } from '../services/api';
 import { addWeeks, parseISO, format } from 'date-fns';
 import { useStudents, useTeachers } from '../contexts/AppContext';
+import { useAuth } from '../contexts/AuthContext';
 import DatePicker from './DatePicker';
 
 interface CourseFormProps {
   course?: Course;
+  role?: Role;
   onClose: () => void;
   onSave: (course: Omit<Course, 'id'>) => Promise<void>;
 }
@@ -18,11 +20,15 @@ const timeSlots = [
 
 const roomOptions = ['琴房 1', '琴房 2', '琴房 3', '琴房 4', '琴房 5', '舞蹈室', '美术室', '声乐室'];
 
-export default function CourseForm({ course, onClose, onSave }: CourseFormProps) {
+export default function CourseForm({ course, role, onClose, onSave }: CourseFormProps) {
   const { students } = useStudents();
   const { teachers } = useTeachers();
+  const { user } = useAuth();
   const firstStudent = students[0];
-  const firstTeacher = teachers.find(t => t.status === 'active');
+  const firstTeacher = role === 'teacher' 
+    ? teachers.find(t => t.id === user?.id) 
+    : teachers.find(t => t.status === 'active');
+  const isTeacher = role === 'teacher';
 
   const [formData, setFormData] = useState({
     title: course?.title || '',
@@ -125,6 +131,7 @@ export default function CourseForm({ course, onClose, onSave }: CourseFormProps)
           studentId: formData.studentId,
           studentName: formData.studentName,
           room: formData.room,
+          campusId: selectedStudent?.campusId || null,
           status: 'scheduled'
         };
 
@@ -375,19 +382,27 @@ export default function CourseForm({ course, onClose, onSave }: CourseFormProps)
                 </div>
                 <h3 className="font-bold text-gray-900 text-sm">教师</h3>
               </div>
-              <select
-                value={formData.teacherId}
-                onChange={e => handleTeacherChange(e.target.value)}
-                className={`w-full px-3 py-2.5 border-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FD79A8]/20 text-sm ${
-                  errors.teacherId ? 'border-red-300 bg-red-50' : 'border-gray-100 bg-white hover:border-gray-200'
-                }`}
-              >
-                <option value="">选择教师</option>
-                {teachers.filter(t => t.status === 'active').map(teacher => (
-                  <option key={teacher.id} value={teacher.id}>{teacher.name}</option>
-                ))}
-              </select>
-              {errors.teacherId && <p className="text-xs text-red-500 mt-1">{errors.teacherId}</p>}
+              {isTeacher ? (
+                <div className={`w-full px-3 py-2.5 border-2 border-gray-100 bg-gray-50 rounded-xl text-sm`}>
+                  <span className="font-medium">{formData.teacherName}</span>
+                </div>
+              ) : (
+                <>
+                  <select
+                    value={formData.teacherId}
+                    onChange={e => handleTeacherChange(e.target.value)}
+                    className={`w-full px-3 py-2.5 border-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FD79A8]/20 text-sm ${
+                      errors.teacherId ? 'border-red-300 bg-red-50' : 'border-gray-100 bg-white hover:border-gray-200'
+                    }`}
+                  >
+                    <option value="">选择教师</option>
+                    {teachers.filter(t => t.status === 'active').map(teacher => (
+                      <option key={teacher.id} value={teacher.id}>{teacher.name}</option>
+                    ))}
+                  </select>
+                  {errors.teacherId && <p className="text-xs text-red-500 mt-1">{errors.teacherId}</p>}
+                </>
+              )}
             </div>
           </div>
 

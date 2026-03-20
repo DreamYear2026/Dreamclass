@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Home, Users, Calendar, MessageSquare, Settings, BarChart2, BarChart3, BookOpen, GraduationCap, User, Star, DollarSign, Building2, AlertTriangle, Award, TrendingUp, ClipboardList, Bell, Trophy, Music, CalendarDays, ChevronLeft, ChevronRight, Sparkles, CheckSquare, FolderOpen, UserPlus, FileText, Clock, Database } from 'lucide-react';
+import { Home, Users, Calendar, MessageSquare, Settings, BarChart2, BarChart3, BookOpen, GraduationCap, User, Star, DollarSign, Building2, AlertTriangle, Award, TrendingUp, ClipboardList, Bell, Trophy, Music, CalendarDays, ChevronLeft, ChevronRight, Sparkles, CheckSquare, FolderOpen, UserPlus, FileText, Clock, Database, Megaphone, Brain, Shield, Activity, TrendingUp as TrendingUpIcon, CreditCard } from 'lucide-react';
 import { Role, Language } from '../types';
 import { useTranslation } from '../i18n';
 
@@ -13,14 +13,19 @@ interface SidebarProps {
 export default function Sidebar({ role, activeTab, setActiveTab, lang }: SidebarProps) {
   const { t } = useTranslation(lang);
   const [collapsed, setCollapsed] = useState(false);
+  const isAdminRole = role === 'admin' || role === 'super_admin';
 
   const adminLinks = [
     { id: 'overview', label: t('navHome'), icon: <Home className="w-5 h-5" />, group: 'main' },
+    { id: 'announcements', label: lang === 'zh' ? '系统公告' : 'Announcements', icon: <Megaphone className="w-5 h-5" />, group: 'main' },
+    { id: 'approvals', label: lang === 'zh' ? '审批中心' : 'Approvals', icon: <ClipboardList className="w-5 h-5" />, group: 'main' },
+    { id: 'registration', label: lang === 'zh' ? '报名续课' : 'Registration', icon: <BookOpen className="w-5 h-5" />, group: 'main' },
+    { id: 'user-management', label: lang === 'zh' ? '用户管理' : 'User Management', icon: <Shield className="w-5 h-5" />, group: 'management' },
     { id: 'students', label: t('navStudents'), icon: <Users className="w-5 h-5" />, group: 'management' },
     { id: 'teachers', label: t('manageTeachers'), icon: <GraduationCap className="w-5 h-5" />, group: 'management' },
     { id: 'teacher-performance', label: lang === 'zh' ? '教师绩效' : 'Performance', icon: <Award className="w-5 h-5" />, group: 'management' },
     { id: 'campuses', label: lang === 'zh' ? '校区管理' : 'Campuses', icon: <Building2 className="w-5 h-5" />, group: 'management' },
-    { id: 'leads', label: lang === 'zh' ? '线索管理' : 'Leads', icon: <UserPlus className="w-5 h-5" />, group: 'management' },
+    { id: 'marketing', label: lang === 'zh' ? '营销中心' : 'Marketing', icon: <Megaphone className="w-5 h-5" />, group: 'management' },
     { id: 'leave-requests', label: lang === 'zh' ? '请假管理' : 'Leave', icon: <FileText className="w-5 h-5" />, group: 'management' },
     { id: 'schedule', label: t('navSchedule'), icon: <Calendar className="w-5 h-5" />, group: 'teaching' },
     { id: 'checkin', label: lang === 'zh' ? '签到管理' : 'Check-in', icon: <CheckSquare className="w-5 h-5" />, group: 'teaching' },
@@ -39,21 +44,33 @@ export default function Sidebar({ role, activeTab, setActiveTab, lang }: Sidebar
     { id: 'analytics', label: lang === 'zh' ? '数据分析' : 'Analytics', icon: <BarChart2 className="w-5 h-5" />, group: 'analytics' },
     { id: 'reports', label: t('navReports'), icon: <BarChart3 className="w-5 h-5" />, group: 'analytics' },
     { id: 'materials', label: t('navMaterials'), icon: <BookOpen className="w-5 h-5" />, group: 'resources' },
+    { id: 'operation-logs', label: lang === 'zh' ? '操作日志' : 'Logs', icon: <Activity className="w-5 h-5" />, group: 'resources' },
     { id: 'backup-restore', label: lang === 'zh' ? '数据备份' : 'Backup', icon: <Database className="w-5 h-5" />, group: 'resources' },
+    { id: 'ai-assistant', label: lang === 'zh' ? 'AI智能助手' : 'AI Assistant', icon: <Brain className="w-5 h-5" />, group: 'analytics' },
+    { id: 'student-analytics', label: lang === 'zh' ? '学员画像分析' : 'Student Analytics', icon: <TrendingUpIcon className="w-5 h-5" />, group: 'analytics' },
+    { id: 'salary-management', label: lang === 'zh' ? '工资管理' : 'Salary Management', icon: <DollarSign className="w-5 h-5" />, group: 'business' },
     { id: 'settings', label: lang === 'zh' ? '系统设置' : 'Settings', icon: <Settings className="w-5 h-5" />, group: 'account' },
   ];
 
   const parentLinks = [
     { id: 'overview', label: t('navHome'), icon: <Home className="w-5 h-5" />, group: 'main' },
+    { id: 'parent-notifications', label: lang === 'zh' ? '通知中心' : 'Notifications', icon: <Bell className="w-5 h-5" />, group: 'main' },
     { id: 'homework', label: lang === 'zh' ? '作业中心' : 'Homework', icon: <ClipboardList className="w-5 h-5" />, group: 'main' },
     { id: 'messages', label: lang === 'zh' ? '课堂反馈' : 'Feedback', icon: <Star className="w-5 h-5" />, group: 'main' },
+    { id: 'growth', label: lang === 'zh' ? '成长档案' : 'Growth Profile', icon: <Award className="w-5 h-5" />, group: 'personal' },
+    { id: 'payments', label: lang === 'zh' ? '缴费记录' : 'Payments', icon: <CreditCard className="w-5 h-5" />, group: 'personal' },
+    { id: 'ai-assistant', label: lang === 'zh' ? 'AI助手' : 'AI Assistant', icon: <Brain className="w-5 h-5" />, group: 'personal' },
     { id: 'profile', label: t('navProfile'), icon: <User className="w-5 h-5" />, group: 'account' },
   ];
 
   const teacherLinks = [
     { id: 'overview', label: t('navHome'), icon: <Home className="w-5 h-5" />, group: 'main' },
+    { id: 'notifications', label: lang === 'zh' ? '通知中心' : 'Notifications', icon: <Bell className="w-5 h-5" />, group: 'main' },
     { id: 'feedback', label: lang === 'zh' ? '课堂点评' : 'Reviews', icon: <Star className="w-5 h-5" />, group: 'main' },
     { id: 'messages', label: lang === 'zh' ? '消息中心' : 'Messages', icon: <MessageSquare className="w-5 h-5" />, group: 'main' },
+    { id: 'my-performance', label: lang === 'zh' ? '我的绩效' : 'Performance', icon: <TrendingUp className="w-5 h-5" />, group: 'personal' },
+    { id: 'my-salary', label: lang === 'zh' ? '我的工资' : 'Salary', icon: <DollarSign className="w-5 h-5" />, group: 'personal' },
+    { id: 'ai-assistant', label: lang === 'zh' ? 'AI助手' : 'AI Assistant', icon: <Brain className="w-5 h-5" />, group: 'personal' },
     { id: 'homework', label: lang === 'zh' ? '作业中心' : 'Homework', icon: <ClipboardList className="w-5 h-5" />, group: 'tools' },
     { id: 'student-progress', label: lang === 'zh' ? '学员进度' : 'Progress', icon: <TrendingUp className="w-5 h-5" />, group: 'tools' },
     { id: 'portfolio', label: lang === 'zh' ? '作品集' : 'Portfolio', icon: <FolderOpen className="w-5 h-5" />, group: 'tools' },
@@ -62,7 +79,7 @@ export default function Sidebar({ role, activeTab, setActiveTab, lang }: Sidebar
     { id: 'profile', label: t('navProfile'), icon: <User className="w-5 h-5" />, group: 'account' },
   ];
 
-  const links = role === 'admin' ? adminLinks : role === 'teacher' ? teacherLinks : parentLinks;
+  const links = isAdminRole ? adminLinks : role === 'teacher' ? teacherLinks : parentLinks;
   
   const groupedLinks = links.reduce((acc, link) => {
     if (!acc[link.group]) acc[link.group] = [];
@@ -75,6 +92,7 @@ export default function Sidebar({ role, activeTab, setActiveTab, lang }: Sidebar
     management: lang === 'zh' ? '人员管理' : 'Management',
     teaching: lang === 'zh' ? '教学管理' : 'Teaching',
     tools: lang === 'zh' ? '工具中心' : 'Tools',
+    personal: lang === 'zh' ? '个人中心' : 'Personal',
     business: lang === 'zh' ? '经营管理' : 'Business',
     communication: lang === 'zh' ? '沟通中心' : 'Communication',
     engagement: lang === 'zh' ? '学员互动' : 'Engagement',
@@ -104,7 +122,7 @@ export default function Sidebar({ role, activeTab, setActiveTab, lang }: Sidebar
     },
   };
 
-  const theme = themeColors[role];
+  const theme = themeColors[isAdminRole ? 'admin' : role];
 
   return (
     <div className={`hidden md:flex flex-col bg-white border-r border-gray-100 h-[calc(100vh-4rem)] sticky top-16 transition-all duration-300 ${collapsed ? 'w-20' : 'w-72'}`}>

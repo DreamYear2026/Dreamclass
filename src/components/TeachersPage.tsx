@@ -2,24 +2,30 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { Plus, Search, Edit2, Trash2, Phone, Mail, Loader2 } from 'lucide-react';
 import { Language, Teacher } from '../types';
 import { useTranslation } from '../i18n';
-import { useTeachers } from '../contexts/AppContext';
+import { useCampuses, useTeachers } from '../contexts/AppContext';
 import { useToast } from './Toast';
 import TeacherForm from './TeacherForm';
+
+type TeacherFormData = Partial<Teacher> & {
+  username?: string;
+  password?: string;
+};
 
 export default function TeachersPage({ lang }: { lang: Language }) {
   const { t } = useTranslation(lang);
   const { teachers, loading, addTeacher, updateTeacher, deleteTeacher } = useTeachers();
+  const { selectedCampusId } = useCampuses();
   const { showToast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState<Teacher | null>(null);
 
-  const handleAddTeacher = useCallback(async (data: Omit<Teacher, 'id'>) => {
+  const handleAddTeacher = useCallback(async (data: TeacherFormData) => {
     await addTeacher(data);
     showToast('教师添加成功', 'success');
   }, [addTeacher, showToast]);
 
-  const handleUpdateTeacher = useCallback(async (id: string, data: Partial<Teacher>) => {
+  const handleUpdateTeacher = useCallback(async (id: string, data: TeacherFormData) => {
     await updateTeacher(id, data);
     showToast('教师信息更新成功', 'success');
   }, [updateTeacher, showToast]);
@@ -123,6 +129,9 @@ export default function TeachersPage({ lang }: { lang: Language }) {
                     {teacher.email}
                   </p>
                 )}
+                {teacher.username && (
+                  <p className="text-xs text-gray-500">账号：{teacher.username}</p>
+                )}
               </div>
 
               <div className="mt-4 flex justify-end space-x-2">
@@ -174,7 +183,7 @@ export default function TeachersPage({ lang }: { lang: Language }) {
             if (editingTeacher) {
               await handleUpdateTeacher(editingTeacher.id, data);
             } else {
-              await handleAddTeacher(data as Omit<Teacher, 'id'>);
+              await handleAddTeacher(data);
             }
           }}
         />

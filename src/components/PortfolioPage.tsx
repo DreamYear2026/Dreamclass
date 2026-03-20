@@ -9,6 +9,7 @@ import { useToast } from './Toast';
 import BottomSheet from './BottomSheet';
 import { format, parseISO, differenceInMonths, differenceInDays, isAfter, isBefore, startOfMonth } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import { apiRequest } from '../services/api';
 
 interface PortfolioItem {
   id: string;
@@ -86,13 +87,13 @@ export default function PortfolioPage({ lang }: { lang: Language }) {
   const fetchPortfolioData = async (studentId: string) => {
     try {
       setLoading(true);
-      const [portfolioRes, milestonesRes] = await Promise.all([
-        fetch(`/api/portfolio/${studentId}`, { credentials: 'include' }),
-        fetch(`/api/milestones/${studentId}`, { credentials: 'include' }),
+      const [portfolioData, milestonesData] = await Promise.all([
+        apiRequest<PortfolioItem[]>(`/api/portfolio/${studentId}`),
+        apiRequest<Milestone[]>(`/api/milestones/${studentId}`),
       ]);
-      
-      if (portfolioRes.ok) setPortfolioItems(await portfolioRes.json());
-      if (milestonesRes.ok) setMilestones(await milestonesRes.json());
+
+      setPortfolioItems(portfolioData);
+      setMilestones(milestonesData);
     } catch (error) {
       console.error('Failed to fetch portfolio data:', error);
     } finally {
@@ -148,10 +149,9 @@ export default function PortfolioPage({ lang }: { lang: Language }) {
     }
 
     try {
-      const response = await fetch('/api/portfolio', {
+      await apiRequest<PortfolioItem>('/api/portfolio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           studentId: targetStudentId,
           ...newItem,
@@ -162,12 +162,10 @@ export default function PortfolioPage({ lang }: { lang: Language }) {
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '作品已上传' : 'Uploaded', 'success');
-        setShowUpload(false);
-        setNewItem({ type: 'photo', title: '', description: '', tags: '', rating: 5, teacherComment: '' });
-        fetchPortfolioData(targetStudentId);
-      }
+      showToast(lang === 'zh' ? '作品已上传' : 'Uploaded', 'success');
+      setShowUpload(false);
+      setNewItem({ type: 'photo', title: '', description: '', tags: '', rating: 5, teacherComment: '' });
+      fetchPortfolioData(targetStudentId);
     } catch (error) {
       showToast(lang === 'zh' ? '上传失败' : 'Failed to upload', 'error');
     }
@@ -180,10 +178,9 @@ export default function PortfolioPage({ lang }: { lang: Language }) {
     }
 
     try {
-      const response = await fetch('/api/milestones', {
+      await apiRequest<Milestone>('/api/milestones', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           studentId: targetStudentId,
           ...newMilestone,
@@ -193,12 +190,10 @@ export default function PortfolioPage({ lang }: { lang: Language }) {
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '里程碑已添加' : 'Milestone added', 'success');
-        setShowAddMilestone(false);
-        setNewMilestone({ title: '', description: '', category: 'skill', date: format(new Date(), 'yyyy-MM-dd') });
-        fetchPortfolioData(targetStudentId);
-      }
+      showToast(lang === 'zh' ? '里程碑已添加' : 'Milestone added', 'success');
+      setShowAddMilestone(false);
+      setNewMilestone({ title: '', description: '', category: 'skill', date: format(new Date(), 'yyyy-MM-dd') });
+      fetchPortfolioData(targetStudentId);
     } catch (error) {
       showToast(lang === 'zh' ? '添加失败' : 'Failed to add', 'error');
     }

@@ -1,16 +1,67 @@
 import { Student, Course, Attendance, Feedback, Payment, Message, Notification, Teacher, User, Material, HoursChangeRecord, Homework, LeaveRequest, Campus } from '../types';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '');
+
+const buildApiUrl = (path: string) => {
+  if (/^https?:\/\//i.test(path)) return path;
+  if (!API_BASE_URL) return path;
+  if (path.startsWith('/')) return `${API_BASE_URL}${path}`;
+  return `${API_BASE_URL}/${path}`;
+};
+
+export const apiFetch = (path: string, init: RequestInit = {}) => {
+  return fetch(buildApiUrl(path), {
+    credentials: init.credentials ?? 'include',
+    ...init,
+  });
+};
+
+export const apiRequest = async <T>(path: string, init: RequestInit = {}) => {
+  const res = await apiFetch(path, init);
+  return handleResponse<T>(res);
+};
+
 const handleResponse = async <T>(res: Response): Promise<T> => {
+  const contentType = res.headers?.get?.('content-type') || '';
+  const bodyText = await (res as any).text();
+  const tryParseJson = () => {
+    if (!bodyText) return null;
+    return JSON.parse(bodyText);
+  };
+
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${res.status}`);
+    if (contentType.includes('application/json')) {
+      const parsed = (() => {
+        try {
+          return tryParseJson() as any;
+        } catch {
+          return null;
+        }
+      })();
+      const msg = parsed?.error || parsed?.message;
+      throw new Error(msg || `HTTP ${res.status}`);
+    }
+
+    const snippet = bodyText?.slice?.(0, 200) || '';
+    throw new Error(`HTTP ${res.status}${snippet ? `: ${snippet}` : ''}`);
   }
-  return res.json();
+
+  if (!contentType || contentType.includes('application/json')) {
+    try {
+      return (tryParseJson() ?? (null as any)) as T;
+    } catch {
+      const snippet = bodyText?.slice?.(0, 200) || '';
+      throw new Error(`Invalid JSON response${snippet ? `: ${snippet}` : ''}`);
+    }
+  }
+
+  const snippet = bodyText?.slice?.(0, 200) || '';
+  throw new Error(`Expected JSON but got ${contentType}${snippet ? `: ${snippet}` : ''}`);
 };
 
 export const api = {
   async login(username: string, password: string): Promise<User> {
-    const res = await fetch('/api/auth/login', {
+    const res = await apiFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -19,27 +70,27 @@ export const api = {
   },
 
   async logout(): Promise<void> {
-    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    const res = await apiFetch('/api/auth/logout', { method: 'POST' });
     await handleResponse(res);
   },
 
   async getCurrentUser(): Promise<User | null> {
-    const res = await fetch('/api/auth/me');
+    const res = await apiFetch('/api/auth/me');
     if (res.status === 401) return null;
     return handleResponse(res);
   },
   async getStudents(): Promise<Student[]> {
-    const res = await fetch('/api/students');
+    const res = await apiFetch('/api/students');
     return handleResponse(res);
   },
 
   async getStudent(id: string): Promise<Student> {
-    const res = await fetch(`/api/students/${id}`);
+    const res = await apiFetch(`/api/students/${id}`);
     return handleResponse(res);
   },
 
   async addStudent(student: Omit<Student, 'id'>): Promise<Student> {
-    const res = await fetch('/api/students', {
+    const res = await apiFetch('/api/students', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(student),
@@ -48,7 +99,7 @@ export const api = {
   },
 
   async updateStudent(id: string, student: Partial<Student>): Promise<void> {
-    const res = await fetch(`/api/students/${id}`, {
+    const res = await apiFetch(`/api/students/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(student),
@@ -57,12 +108,12 @@ export const api = {
   },
 
   async deleteStudent(id: string): Promise<void> {
-    const res = await fetch(`/api/students/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/students/${id}`, { method: 'DELETE' });
     await handleResponse(res);
   },
 
   async changeStudentHours(id: string, changeAmount: number, reason: string): Promise<{ previousHours: number; newHours: number; changeAmount: number }> {
-    const res = await fetch(`/api/students/${id}/hours-change`, {
+    const res = await apiFetch(`/api/students/${id}/hours-change`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ changeAmount, reason }),
@@ -71,12 +122,12 @@ export const api = {
   },
 
   async getStudentHoursHistory(id: string): Promise<HoursChangeRecord[]> {
-    const res = await fetch(`/api/students/${id}/hours-history`);
+    const res = await apiFetch(`/api/students/${id}/hours-history`);
     return handleResponse(res);
   },
 
   async batchDeleteStudents(ids: string[]): Promise<{ deletedCount: number }> {
-    const res = await fetch('/api/students/batch-delete', {
+    const res = await apiFetch('/api/students/batch-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids }),
@@ -85,17 +136,17 @@ export const api = {
   },
 
   async getTeachers(): Promise<Teacher[]> {
-    const res = await fetch('/api/teachers');
+    const res = await apiFetch('/api/teachers');
     return handleResponse(res);
   },
 
   async getTeacher(id: string): Promise<Teacher> {
-    const res = await fetch(`/api/teachers/${id}`);
+    const res = await apiFetch(`/api/teachers/${id}`);
     return handleResponse(res);
   },
 
-  async addTeacher(teacher: Omit<Teacher, 'id'>): Promise<Teacher> {
-    const res = await fetch('/api/teachers', {
+  async addTeacher(teacher: Omit<Teacher, 'id'> & { username?: string; password?: string }): Promise<Teacher> {
+    const res = await apiFetch('/api/teachers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(teacher),
@@ -103,32 +154,32 @@ export const api = {
     return handleResponse(res);
   },
 
-  async updateTeacher(id: string, teacher: Partial<Teacher>): Promise<void> {
-    const res = await fetch(`/api/teachers/${id}`, {
+  async updateTeacher(id: string, teacher: Partial<Teacher> & { username?: string; password?: string }): Promise<Teacher> {
+    const res = await apiFetch(`/api/teachers/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(teacher),
     });
-    await handleResponse(res);
+    return handleResponse<Teacher>(res);
   },
 
   async deleteTeacher(id: string): Promise<void> {
-    const res = await fetch(`/api/teachers/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/teachers/${id}`, { method: 'DELETE' });
     await handleResponse(res);
   },
 
   async getCourses(): Promise<Course[]> {
-    const res = await fetch('/api/courses');
+    const res = await apiFetch('/api/courses');
     return handleResponse(res);
   },
 
   async getCourse(id: string): Promise<Course> {
-    const res = await fetch(`/api/courses/${id}`);
+    const res = await apiFetch(`/api/courses/${id}`);
     return handleResponse(res);
   },
 
   async addCourse(course: Omit<Course, 'id' | 'status'>): Promise<Course> {
-    const res = await fetch('/api/courses', {
+    const res = await apiFetch('/api/courses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(course),
@@ -137,7 +188,7 @@ export const api = {
   },
 
   async addCoursesBatch(courses: Omit<Course, 'id' | 'status'>[]): Promise<void> {
-    const res = await fetch('/api/courses/batch', {
+    const res = await apiFetch('/api/courses/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(courses),
@@ -146,7 +197,7 @@ export const api = {
   },
 
   async updateCourseStatus(id: string, status: string): Promise<void> {
-    const res = await fetch(`/api/courses/${id}`, {
+    const res = await apiFetch(`/api/courses/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
@@ -155,7 +206,7 @@ export const api = {
   },
 
   async updateCourse(id: string, course: Partial<Omit<Course, 'id' | 'status' | 'studentId' | 'studentName'>>): Promise<void> {
-    const res = await fetch(`/api/courses/${id}`, {
+    const res = await apiFetch(`/api/courses/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(course),
@@ -164,12 +215,12 @@ export const api = {
   },
 
   async deleteCourse(id: string): Promise<void> {
-    const res = await fetch(`/api/courses/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/courses/${id}`, { method: 'DELETE' });
     await handleResponse(res);
   },
 
   async markAttendance(attendance: { courseId: string, studentId: string, status: string, date: string }): Promise<void> {
-    const res = await fetch('/api/attendance', {
+    const res = await apiFetch('/api/attendance', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(attendance),
@@ -178,7 +229,7 @@ export const api = {
   },
 
   async getAttendanceByStudent(studentId: string): Promise<Attendance[]> {
-    const res = await fetch(`/api/attendance/${studentId}`);
+    const res = await apiFetch(`/api/attendance/${studentId}`);
     return handleResponse(res);
   },
 
@@ -186,12 +237,12 @@ export const api = {
     const query = new URLSearchParams();
     if (params?.studentId) query.set('studentId', params.studentId);
     if (params?.teacherId) query.set('teacherId', params.teacherId);
-    const res = await fetch(`/api/feedbacks?${query.toString()}`);
+    const res = await apiFetch(`/api/feedbacks?${query.toString()}`);
     return handleResponse(res);
   },
 
   async addFeedback(feedback: Omit<Feedback, 'id' | 'date'>): Promise<Feedback> {
-    const res = await fetch('/api/feedbacks', {
+    const res = await apiFetch('/api/feedbacks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(feedback),
@@ -201,12 +252,12 @@ export const api = {
 
   async getPayments(studentId?: string): Promise<Payment[]> {
     const query = studentId ? `?studentId=${studentId}` : '';
-    const res = await fetch(`/api/payments${query}`);
+    const res = await apiFetch(`/api/payments${query}`);
     return handleResponse(res);
   },
 
   async addPayment(payment: Omit<Payment, 'id' | 'date' | 'status'>): Promise<Payment> {
-    const res = await fetch('/api/payments', {
+    const res = await apiFetch('/api/payments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payment),
@@ -215,12 +266,12 @@ export const api = {
   },
 
   async getMessages(userId: string, role: string): Promise<Message[]> {
-    const res = await fetch(`/api/messages?userId=${userId}&role=${role}`);
+    const res = await apiFetch(`/api/messages?userId=${userId}&role=${role}`);
     return handleResponse(res);
   },
 
   async sendMessage(message: Omit<Message, 'id' | 'timestamp' | 'read'>): Promise<Message> {
-    const res = await fetch('/api/messages', {
+    const res = await apiFetch('/api/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message),
@@ -229,17 +280,17 @@ export const api = {
   },
 
   async markMessageRead(id: string): Promise<void> {
-    const res = await fetch(`/api/messages/${id}/read`, { method: 'PATCH' });
+    const res = await apiFetch(`/api/messages/${id}/read`, { method: 'PATCH' });
     await handleResponse(res);
   },
 
   async getNotifications(userId: string): Promise<Notification[]> {
-    const res = await fetch(`/api/notifications/${userId}`);
+    const res = await apiFetch(`/api/notifications?userId=${userId}`);
     return handleResponse(res);
   },
 
   async addNotification(notification: Omit<Notification, 'id' | 'timestamp' | 'read'>): Promise<Notification> {
-    const res = await fetch('/api/notifications', {
+    const res = await apiFetch('/api/notifications', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(notification),
@@ -248,17 +299,17 @@ export const api = {
   },
 
   async markNotificationRead(id: string): Promise<void> {
-    const res = await fetch(`/api/notifications/${id}/read`, { method: 'PATCH' });
+    const res = await apiFetch(`/api/notifications/${id}/read`, { method: 'PATCH' });
     await handleResponse(res);
   },
 
   async getMaterials(): Promise<Material[]> {
-    const res = await fetch('/api/materials');
+    const res = await apiFetch('/api/materials');
     return handleResponse(res);
   },
 
   async addMaterial(material: Omit<Material, 'id' | 'uploadDate'>): Promise<Material> {
-    const res = await fetch('/api/materials', {
+    const res = await apiFetch('/api/materials', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(material),
@@ -267,12 +318,12 @@ export const api = {
   },
 
   async deleteMaterial(id: string): Promise<void> {
-    const res = await fetch(`/api/materials/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/materials/${id}`, { method: 'DELETE' });
     await handleResponse(res);
   },
 
   async updateCurrentUser(data: Partial<User>): Promise<User> {
-    const res = await fetch('/api/auth/me', {
+    const res = await apiFetch('/api/auth/me', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -281,7 +332,7 @@ export const api = {
   },
 
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
-    const res = await fetch('/api/auth/password', {
+    const res = await apiFetch('/api/auth/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ currentPassword, newPassword }),
@@ -290,27 +341,61 @@ export const api = {
   },
 
   async getCampuses(): Promise<Campus[]> {
-    const res = await fetch('/api/campuses');
+    const res = await apiFetch('/api/campuses');
     return handleResponse(res);
   },
 
   async getHomeworks(): Promise<Homework[]> {
-    const res = await fetch('/api/homeworks');
+    const res = await apiFetch('/api/homeworks');
     return handleResponse(res);
   },
 
+  async addHomework(homework: {
+    studentId: string;
+    studentName: string;
+    courseId?: string;
+    title: string;
+    description?: string;
+    dueDate?: string;
+  }): Promise<Homework> {
+    const res = await apiFetch('/api/homeworks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(homework),
+    });
+    return handleResponse(res);
+  },
+
+  async submitHomework(id: string, data: { submittedContent: string; submittedAt: string; status: 'submitted' }): Promise<void> {
+    const res = await apiFetch(`/api/homeworks/${id}/submit`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    await handleResponse(res);
+  },
+
+  async reviewHomework(id: string, data: { reviewComment: string; rating: number; reviewedAt: string; status: 'reviewed' }): Promise<void> {
+    const res = await apiFetch(`/api/homeworks/${id}/review`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    await handleResponse(res);
+  },
+
   async getLeaveRequests(): Promise<LeaveRequest[]> {
-    const res = await fetch('/api/leave-requests');
+    const res = await apiFetch('/api/leave-requests');
     return handleResponse(res);
   },
 
   async getBackup(): Promise<any> {
-    const res = await fetch('/api/backup');
+    const res = await apiFetch('/api/backup');
     return handleResponse(res);
   },
 
   async restoreBackup(backupData: any): Promise<void> {
-    const res = await fetch('/api/restore', {
+    const res = await apiFetch('/api/restore', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(backupData),
@@ -319,12 +404,12 @@ export const api = {
   },
 
   async getUsers(): Promise<User[]> {
-    const res = await fetch('/api/users');
+    const res = await apiFetch('/api/users');
     return handleResponse(res);
   },
 
   async addUser(user: Omit<User, 'id'> & { password: string }): Promise<User> {
-    const res = await fetch('/api/users', {
+    const res = await apiFetch('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(user),
@@ -333,7 +418,7 @@ export const api = {
   },
 
   async updateUser(id: string, user: Partial<User> & { password?: string }): Promise<void> {
-    const res = await fetch(`/api/users/${id}`, {
+    const res = await apiFetch(`/api/users/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(user),
@@ -342,7 +427,7 @@ export const api = {
   },
 
   async deleteUser(id: string): Promise<void> {
-    const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
     return handleResponse(res);
   },
 };

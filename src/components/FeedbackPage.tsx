@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { MessageSquare, Star, Send, Clock, User, BookOpen, ThumbsUp, Award, Sparkles, Heart, Calendar, ChevronRight, Search, TrendingUp, Smile, Frown, Meh } from 'lucide-react';
 import { Language, Feedback } from '../types';
 import { useTranslation } from '../i18n';
-import { useStudents, useTeachers, useCourses } from '../contexts/AppContext';
+import { useStudents, useTeachers, useCourses, useFeedbacks } from '../contexts/AppContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from './Toast';
 import { format, parseISO, isToday, isThisWeek, isThisMonth, subDays, startOfWeek, endOfWeek, eachDayOfInterval } from 'date-fns';
@@ -10,60 +10,11 @@ import { zhCN } from 'date-fns/locale';
 import BottomSheet from './BottomSheet';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
-const mockFeedbacks: Feedback[] = [
-  {
-    id: 'f1',
-    studentId: 's1',
-    studentName: '小明',
-    teacherId: 't1',
-    teacherName: '张老师',
-    courseId: 'c1',
-    rating: 5,
-    comment: '今天学习了C大调音阶，表现很好！指法正确，节奏稳定。建议回家多练习左手部分，注意手腕放松。',
-    homework: '练习C大调音阶，每天30分钟，注意左手练习',
-    date: new Date().toISOString(),
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'f2',
-    studentId: 's2',
-    studentName: '小红',
-    teacherId: 't1',
-    teacherName: '张老师',
-    courseId: 'c2',
-    rating: 4,
-    comment: '《小星星》演奏进步很大，音准有提升。需要注意强弱变化，让音乐更有表现力。下次课我们将学习新的曲目。',
-    homework: '继续练习《小星星》，注意强弱变化',
-    date: subDays(new Date(), 2).toISOString(),
-    createdAt: subDays(new Date(), 2).toISOString()
-  },
-  {
-    id: 'f3',
-    studentId: 's1',
-    studentName: '小明',
-    teacherId: 't2',
-    teacherName: '李老师',
-    courseId: 'c3',
-    rating: 5,
-    comment: '乐理测试完成，正确率95%！对音符识别非常熟练，节奏感也很好。继续保持这种学习状态！',
-    homework: '预习下一章节 - 节奏型',
-    date: subDays(new Date(), 5).toISOString(),
-    createdAt: subDays(new Date(), 5).toISOString()
-  },
-  {
-    id: 'f4',
-    studentId: 's1',
-    studentName: '小明',
-    teacherId: 't1',
-    teacherName: '张老师',
-    courseId: 'c4',
-    rating: 3,
-    comment: '今天状态不太好，注意力不够集中。建议保证充足睡眠，下次课要更加专注哦。',
-    homework: '复习之前学过的内容',
-    date: subDays(new Date(), 10).toISOString(),
-    createdAt: subDays(new Date(), 10).toISOString()
-  }
-];
+interface DisplayFeedback extends Feedback {
+  studentName: string;
+  teacherName: string;
+  comment: string;
+}
 
 const COLORS = ['#95E1A3', '#4ECDC4', '#FFE66D', '#FF6B6B'];
 
@@ -72,14 +23,28 @@ export default function FeedbackPage({ lang }: { lang: Language }) {
   const { students } = useStudents();
   const { teachers } = useTeachers();
   const { courses } = useCourses();
+  const { feedbacks: rawFeedbacks, loading } = useFeedbacks();
   const { showToast } = useToast();
   const { user } = useAuth();
 
   const isParent = user?.role === 'parent';
-  const [feedbacks, setFeedbacks] = useState<Feedback[]>(mockFeedbacks);
-  const [selectedFeedback, setSelectedFeedback] = useState<Feedback | null>(null);
+  const [selectedFeedback, setSelectedFeedback] = useState<DisplayFeedback | null>(null);
   const [filter, setFilter] = useState<'all' | 'excellent' | 'good' | 'needsWork'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+
+  const feedbacks = useMemo<DisplayFeedback[]>(() => {
+    const studentNameMap = new Map(students.map((s) => [s.id, s.name]));
+    const teacherNameMap = new Map(teachers.map((t) => [t.id, t.name]));
+    const parentStudentIds = isParent ? new Set(students.filter((s) => s.userId === user?.id).map((s) => s.id)) : null;
+    return rawFeedbacks
+      .filter((f) => !isParent || parentStudentIds?.has(f.studentId))
+      .map((f) => ({
+        ...f,
+        studentName: studentNameMap.get(f.studentId) || '',
+        teacherName: teacherNameMap.get(f.teacherId) || '',
+        comment: f.content,
+      }));
+  }, [rawFeedbacks, students, teachers, isParent, user?.id]);
 
   const filteredFeedbacks = useMemo(() => {
     let result = feedbacks;
@@ -389,7 +354,11 @@ export default function FeedbackPage({ lang }: { lang: Language }) {
 
       {/* Feedback List */}
       <div className="space-y-4">
-        {filteredFeedbacks.length === 0 ? (
+        {loading ? (
+          <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+            {lang === 'zh' ? '反馈加载中...' : 'Loading feedback...'}
+          </div>
+        ) : filteredFeedbacks.length === 0 ? (
           <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-12 text-center">
             <div className="w-24 h-24 rounded-full bg-gradient-to-br from-[#A29BFE]/10 to-[#FD79A8]/10 flex items-center justify-center mx-auto mb-4">
               <MessageSquare className="w-12 h-12 text-[#A29BFE]" />

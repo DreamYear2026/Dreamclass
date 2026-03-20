@@ -304,14 +304,16 @@ export default function Schedule({ role, lang, studentId }: ScheduleProps) {
         </div>
         
         <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
-          {role === 'admin' && (
+          {(role === 'admin' || role === 'teacher') && (
             <>
-              <button 
-                onClick={() => setShowSmartScheduler(true)}
-                className="flex-1 lg:flex-none bg-gradient-to-r from-violet-500 to-purple-600 text-white px-5 py-2.5 rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all duration-200 flex items-center justify-center shadow-lg shadow-purple-500/25 font-medium"
-              >
-                <Sparkles className="w-4 h-4 mr-2" /> 智能排课
-              </button>
+              {role === 'admin' && (
+                <button 
+                  onClick={() => setShowSmartScheduler(true)}
+                  className="flex-1 lg:flex-none bg-gradient-to-r from-violet-500 to-purple-600 text-white px-5 py-2.5 rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all duration-200 flex items-center justify-center shadow-lg shadow-purple-500/25 font-medium"
+                >
+                  <Sparkles className="w-4 h-4 mr-2" /> 智能排课
+                </button>
+              )}
               <button 
                 onClick={() => setShowCourseForm(true)}
                 className="flex-1 lg:flex-none bg-gray-900 text-white px-5 py-2.5 rounded-xl hover:bg-gray-800 transition-all duration-200 flex items-center justify-center shadow-lg shadow-gray-900/25 font-medium"
@@ -560,6 +562,7 @@ export default function Schedule({ role, lang, studentId }: ScheduleProps) {
 
       {showCourseForm && (
         <CourseForm
+          role={role}
           onClose={() => setShowCourseForm(false)}
           onSave={handleAddCourse}
         />
@@ -692,7 +695,7 @@ function WeekView({ weekDays, hours, role, getCoursesForDayAndHour, onCourseClic
                         ))}
                       </div>
                     ) : (
-                      role === 'admin' && (
+                      (role === 'admin' || role === 'teacher') && (
                         <div 
                           onClick={onAddCourse}
                           className={`absolute inset-1.5 rounded-lg border-2 border-dashed transition-all duration-200 cursor-pointer flex items-center justify-center ${
@@ -809,7 +812,7 @@ function DayView({ currentDate, hours, role, getCoursesForDayAndHour, onCourseCl
                     </div>
                   ))}
                   
-                  {hourCourses.length === 0 && role === 'admin' && (
+                  {hourCourses.length === 0 && (role === 'admin' || role === 'teacher') && (
                     <div 
                       onClick={onAddCourse}
                       className="absolute inset-2 rounded-xl border-2 border-dashed border-gray-200 opacity-0 group-hover:opacity-100 transition-all duration-200 cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/50 flex items-center justify-center"
@@ -1005,7 +1008,7 @@ function MonthView({ monthDays, currentDate, filteredCourses, role, onCourseClic
                     +{dayCourses.length - 3} 更多
                   </div>
                 )}
-                {dayCourses.length === 0 && isCurrentMonth && role === 'admin' && (
+                {dayCourses.length === 0 && isCurrentMonth && (role === 'admin' || role === 'teacher') && (
                   <div 
                     onClick={(e) => {
                       e.stopPropagation();

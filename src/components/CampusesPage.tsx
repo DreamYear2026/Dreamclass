@@ -4,6 +4,8 @@ import { Language } from '../types';
 import { useTranslation } from '../i18n';
 import { useToast } from './Toast';
 import { format } from 'date-fns';
+import { apiRequest } from '../services/api';
+import { useCampuses } from '../contexts/AppContext';
 
 interface Campus {
   id: string;
@@ -23,6 +25,7 @@ interface CampusStats {
 export default function CampusesPage({ lang }: { lang: Language }) {
   const { t } = useTranslation(lang);
   const { showToast } = useToast();
+  const { selectedCampusId, setSelectedCampusId } = useCampuses();
   
   const [campuses, setCampuses] = useState<Campus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,26 +45,25 @@ export default function CampusesPage({ lang }: { lang: Language }) {
   const fetchCampuses = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/campuses', { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setCampuses(data);
-        
-        const statsPromises = data.map(async (campus: Campus) => {
-          const statsRes = await fetch(`/api/campuses/${campus.id}/stats`, { credentials: 'include' });
-          if (statsRes.ok) {
-            return { id: campus.id, stats: await statsRes.json() };
+      const data = await apiRequest<Campus[]>('/api/campuses');
+      setCampuses(data);
+
+      const statsResults = await Promise.all(
+        data.map(async (campus) => {
+          try {
+            const stats = await apiRequest<CampusStats>(`/api/campuses/${campus.id}/stats`);
+            return { id: campus.id, stats };
+          } catch {
+            return { id: campus.id, stats: { students: 0, teachers: 0, courses: 0 } };
           }
-          return { id: campus.id, stats: { students: 0, teachers: 0, courses: 0 } };
-        });
-        
-        const statsResults = await Promise.all(statsPromises);
-        const statsMap: Record<string, CampusStats> = {};
-        statsResults.forEach(({ id, stats }) => {
-          statsMap[id] = stats;
-        });
-        setCampusStats(statsMap);
-      }
+        })
+      );
+
+      const statsMap: Record<string, CampusStats> = {};
+      statsResults.forEach(({ id, stats }) => {
+        statsMap[id] = stats;
+      });
+      setCampusStats(statsMap);
     } catch (error) {
       console.error('Failed to fetch campuses:', error);
       showToast(lang === 'zh' ? '获取校区失败' : 'Failed to fetch campuses', 'error');
@@ -80,43 +82,32 @@ export default function CampusesPage({ lang }: { lang: Language }) {
 
     try {
       if (editingCampus) {
-        const res = await fetch(`/api/campuses/${editingCampus.id}`, {
+        await apiRequest<Campus>(`/api/campuses/${editingCampus.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
           body: JSON.stringify(formData),
         });
         
-        if (res.ok) {
-          showToast(lang === 'zh' ? '校区更新成功' : 'Campus updated', 'success');
-          fetchCampuses();
-          setShowForm(false);
-          setEditingCampus(null);
-          setFormData({ name: '', address: '', phone: '' });
-        } else {
-          const error = await res.json();
-          showToast(error.error || 'Update failed', 'error');
-        }
+        showToast(lang === 'zh' ? '校区更新成功' : 'Campus updated', 'success');
+        fetchCampuses();
+        setShowForm(false);
+        setEditingCampus(null);
+        setFormData({ name: '', address: '', phone: '' });
       } else {
-        const res = await fetch('/api/campuses', {
+        await apiRequest<Campus>('/api/campuses', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
           body: JSON.stringify(formData),
         });
         
-        if (res.ok) {
-          showToast(lang === 'zh' ? '校区创建成功' : 'Campus created', 'success');
-          fetchCampuses();
-          setShowForm(false);
-          setFormData({ name: '', address: '', phone: '' });
-        } else {
-          const error = await res.json();
-          showToast(error.error || 'Creation failed', 'error');
-        }
+        showToast(lang === 'zh' ? '校区创建成功' : 'Campus created', 'success');
+        fetchCampuses();
+        setShowForm(false);
+        setFormData({ name: '', address: '', phone: '' });
       }
     } catch (error) {
-      showToast(lang === 'zh' ? '操作失败' : 'Operation failed', 'error');
+      const msg = error instanceof Error ? error.message : '';
+      showToast(msg || (lang === 'zh' ? '操作失败' : 'Operation failed'), 'error');
     }
   };
 
@@ -136,20 +127,15 @@ export default function CampusesPage({ lang }: { lang: Language }) {
     }
 
     try {
-      const res = await fetch(`/api/campuses/${campus.id}`, {
+      await apiRequest<void>(`/api/campuses/${campus.id}`, {
         method: 'DELETE',
-        credentials: 'include',
       });
       
-      if (res.ok) {
-        showToast(lang === 'zh' ? '校区已删除' : 'Campus deleted', 'success');
-        fetchCampuses();
-      } else {
-        const error = await res.json();
-        showToast(error.error || 'Delete failed', 'error');
-      }
+      showToast(lang === 'zh' ? '校区已删除' : 'Campus deleted', 'success');
+      fetchCampuses();
     } catch (error) {
-      showToast(lang === 'zh' ? '删除失败' : 'Delete failed', 'error');
+      const msg = error instanceof Error ? error.message : '';
+      showToast(msg || (lang === 'zh' ? '删除失败' : 'Delete failed'), 'error');
     }
   };
 
@@ -157,19 +143,17 @@ export default function CampusesPage({ lang }: { lang: Language }) {
     const newStatus = campus.status === 'active' ? 'inactive' : 'active';
     
     try {
-      const res = await fetch(`/api/campuses/${campus.id}`, {
+      await apiRequest<Campus>(`/api/campuses/${campus.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ status: newStatus }),
       });
       
-      if (res.ok) {
-        showToast(lang === 'zh' ? '状态已更新' : 'Status updated', 'success');
-        fetchCampuses();
-      }
+      showToast(lang === 'zh' ? '状态已更新' : 'Status updated', 'success');
+      fetchCampuses();
     } catch (error) {
-      showToast(lang === 'zh' ? '更新失败' : 'Update failed', 'error');
+      const msg = error instanceof Error ? error.message : '';
+      showToast(msg || (lang === 'zh' ? '更新失败' : 'Update failed'), 'error');
     }
   };
 
@@ -278,9 +262,23 @@ export default function CampusesPage({ lang }: { lang: Language }) {
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
                         {lang === 'zh' ? '活跃' : 'Active'}
                       </span>
+                      {selectedCampusId === campus.id && (
+                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                          {lang === 'zh' ? '当前' : 'Current'}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        setSelectedCampusId(campus.id);
+                        showToast(lang === 'zh' ? `已切换到：${campus.name}` : `Switched to: ${campus.name}`, 'success');
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium rounded-xl border border-indigo-200 text-indigo-700 hover:bg-indigo-50 transition mr-1"
+                    >
+                      {lang === 'zh' ? '切换' : 'Switch'}
+                    </button>
                     <button
                       onClick={() => handleEdit(campus)}
                       className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"

@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { TrendingUp, TrendingDown, Users, DollarSign, Calendar, Clock, Award, Target, PieChart, BarChart3, Loader2, Download, FileSpreadsheet, FileText } from 'lucide-react';
+import { TrendingUp, TrendingDown, Users, DollarSign, Calendar, Clock, Award, Target, PieChart, BarChart3, Loader2, Download, FileSpreadsheet, FileText, AlertTriangle, RefreshCw, Building2, Activity, Copy } from 'lucide-react';
 import { Language } from '../types';
 import { useTranslation } from '../i18n';
-import { useStudents, useCourses, useTeachers } from '../contexts/AppContext';
+import { useStudents, useCourses, useTeachers, useCampuses } from '../contexts/AppContext';
 import { useToast } from './Toast';
-import { parseISO, format, isThisMonth, isThisYear, subMonths, eachMonthOfInterval, differenceInMonths, startOfMonth, endOfMonth } from 'date-fns';
+import { parseISO, format, isThisMonth, isThisYear, subMonths, eachMonthOfInterval, differenceInMonths, startOfMonth, endOfMonth, differenceInDays, isWithinInterval, subDays } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { exportToExcel, exportToPDF, exportReportToPDF, exportMultipleSheetsToExcel } from '../utils/export';
+import { apiRequest } from '../services/api';
+import BusinessFilterBar from './BusinessFilterBar';
 
 interface AnalyticsData {
   studentRetention: { month: string; rate: number; newStudents: number; leftStudents: number }[];
@@ -21,27 +23,45 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
   const { students, loading: studentsLoading } = useStudents();
   const { courses, loading: coursesLoading } = useCourses();
   const { teachers, loading: teachersLoading } = useTeachers();
+  const { campuses, selectedCampusId } = useCampuses();
   const { showToast } = useToast();
 
   const [payments, setPayments] = useState<any[]>([]);
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'teachers' | 'finance'>('overview');
+  const [analyticsWindow, setAnalyticsWindow] = useState<7 | 30 | 90>(30);
+  const [analyticsStatus, setAnalyticsStatus] = useState<'all' | 'paid' | 'pending'>('all');
+
+  const currentCampusName = useMemo(() => {
+    return campuses.find((c) => c.id === selectedCampusId)?.name || (lang === 'zh' ? '当前校区' : 'Current Campus');
+  }, [campuses, selectedCampusId, lang]);
+
+  const formatCurrencyValue = (v: number) => `¥${Number(v || 0).toLocaleString()}`;
+
+  const analyticsStatusLabel = useMemo(() => {
+    return analyticsStatus === 'paid'
+      ? (lang === 'zh' ? '仅已支付' : 'Paid only')
+      : analyticsStatus === 'pending'
+      ? (lang === 'zh' ? '仅待支付' : 'Pending only')
+      : (lang === 'zh' ? '全部状态' : 'All status');
+  }, [analyticsStatus, lang]);
 
   useEffect(() => {
     fetchAnalyticsData();
-  }, []);
+  }, [students]);
 
   const fetchAnalyticsData = async () => {
     try {
       setLoading(true);
-      const [paymentsRes, leadsRes] = await Promise.all([
-        fetch('/api/payments', { credentials: 'include' }),
-        fetch('/api/leads', { credentials: 'include' }),
+      const [paymentsData, leadsData] = await Promise.all([
+        apiRequest<any[]>('/api/payments'),
+        apiRequest<any[]>('/api/leads'),
       ]);
-      
-      if (paymentsRes.ok) setPayments(await paymentsRes.json());
-      if (leadsRes.ok) setLeads(await leadsRes.json());
+
+      const studentIdSet = new Set(students.map((s) => s.id));
+      setPayments(paymentsData.filter((p) => studentIdSet.has(p.studentId)));
+      setLeads(leadsData);
     } catch (error) {
       console.error('Failed to fetch analytics data:', error);
     } finally {
@@ -50,6 +70,22 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
   };
 
   const allLoading = studentsLoading || coursesLoading || teachersLoading || loading;
+
+  const filteredPayments = useMemo(() => {
+    return payments.filter((p) => {
+      if (analyticsStatus === 'paid') return p.amount > 0;
+      if (analyticsStatus === 'pending') return p.amount < 0;
+      return true;
+    });
+  }, [payments, analyticsStatus]);
+
+  const windowedPayments = useMemo(() => {
+    const start = subDays(new Date(), analyticsWindow - 1);
+    const end = new Date();
+    return filteredPayments.filter((p) =>
+      isWithinInterval(parseISO(p.date), { start, end })
+    );
+  }, [filteredPayments, analyticsWindow]);
 
   const monthlyData = useMemo(() => {
     const months = eachMonthOfInterval({
@@ -66,7 +102,7 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
         return courseDate >= monthStart && courseDate <= monthEnd;
       });
 
-      const monthPayments = payments.filter(p => {
+      const monthPayments = filteredPayments.filter(p => {
         const paymentDate = parseISO(p.date);
         return paymentDate >= monthStart && paymentDate <= monthEnd;
       });
@@ -86,7 +122,7 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
         hours: completedCourses.length,
       };
     });
-  }, [courses, payments, lang]);
+  }, [courses, filteredPayments, lang]);
 
   const studentAnalytics = useMemo(() => {
     const activeStudents = students.filter(s => s.remainingHours > 0);
@@ -100,6 +136,27 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
       ? ((activeStudents.length / students.length) * 100).toFixed(1)
       : 0;
 
+    const now = new Date();
+    const thirtyDaysAgo = subDays(now, 30);
+    const sixtyDaysAgo = subDays(now, 60);
+    
+    const atRiskStudents = students.filter(student => {
+      if (student.remainingHours === 0) return true;
+      if (student.remainingHours < 5) return true;
+      const lastCourseDate = courses
+        .filter(c => c.studentIds?.includes(student.id))
+        .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime())[0];
+      if (lastCourseDate) {
+        const daysSinceLastCourse = differenceInDays(now, parseISO(lastCourseDate.date));
+        return daysSinceLastCourse > 30;
+      }
+      return false;
+    });
+
+    const highRiskStudents = atRiskStudents.filter(s => s.remainingHours === 0);
+    const mediumRiskStudents = atRiskStudents.filter(s => s.remainingHours > 0 && s.remainingHours < 5);
+    const lowRiskStudents = atRiskStudents.filter(s => s.remainingHours >= 5);
+
     return {
       total: students.length,
       active: activeStudents.length,
@@ -108,8 +165,131 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
       totalHours,
       avgHours: avgHours.toFixed(1),
       retentionRate,
+      atRiskStudents,
+      highRiskStudents,
+      mediumRiskStudents,
+      lowRiskStudents,
     };
-  }, [students]);
+  }, [students, courses]);
+
+  const renewalAnalytics = useMemo(() => {
+    const thisMonth = startOfMonth(new Date());
+    const lastMonth = startOfMonth(subMonths(new Date(), 1));
+    
+    const studentsWithRecentPayments = students.filter(student => {
+      const recentPayment = payments.find(p => 
+        p.studentId === student.id && 
+        isThisMonth(parseISO(p.date)) && 
+        p.amount > 0
+      );
+      return recentPayment !== undefined;
+    });
+
+    const studentsNeedingRenewal = students.filter(s => s.remainingHours < 5);
+    const renewedStudents = studentsWithRecentPayments.filter(s => s.remainingHours < 10);
+    
+    const renewalRate = studentsNeedingRenewal.length > 0 
+      ? ((renewedStudents.length / studentsNeedingRenewal.length) * 100).toFixed(1)
+      : 0;
+
+    return {
+      needingRenewal: studentsNeedingRenewal.length,
+      renewed: renewedStudents.length,
+      renewalRate,
+      studentsNeedingRenewal,
+      renewedStudents,
+    };
+  }, [students, payments]);
+
+  const teacherCapacityAnalytics = useMemo(() => {
+    const thisMonthCourses = courses.filter(c => isThisMonth(parseISO(c.date)));
+    
+    return teachers.map(teacher => {
+      const teacherCourses = thisMonthCourses.filter(c => c.teacherId === teacher.id);
+      const completedCourses = teacherCourses.filter(c => c.status === 'completed');
+      const totalStudents = teacherCourses.reduce((sum, course) => 
+        sum + (course.studentIds?.length || 0), 0
+      );
+      
+      const avgStudentsPerCourse = teacherCourses.length > 0 
+        ? (totalStudents / teacherCourses.length).toFixed(1)
+        : 0;
+      
+      const capacityUtilization = teacherCourses.length > 0 
+        ? Math.min(100, (teacherCourses.length / 30) * 100).toFixed(1)
+        : 0;
+      
+      return {
+        id: teacher.id,
+        name: teacher.name,
+        courses: teacherCourses.length,
+        completedCourses: completedCourses.length,
+        hours: completedCourses.length,
+        totalStudents,
+        avgStudentsPerCourse,
+        capacityUtilization,
+        status: teacher.status,
+      };
+    }).sort((a, b) => b.completedCourses - a.completedCourses);
+  }, [teachers, courses]);
+
+  const campusRevenueAnalytics = useMemo(() => {
+    const thisMonthPayments = payments.filter(p => isThisMonth(parseISO(p.date)));
+    const thisYearPayments = payments.filter(p => isThisYear(parseISO(p.date)));
+    const campusNameMap = new Map(campuses.map((c) => [c.id, c.name]));
+
+    const studentCampusMap = new Map(
+      students.map((s) => [s.id, s.campusId || selectedCampusId || 'unassigned'])
+    );
+
+    const studentCountByCampus = new Map<string, number>();
+    students.forEach((s) => {
+      const cid = s.campusId || selectedCampusId || 'unassigned';
+      studentCountByCampus.set(cid, (studentCountByCampus.get(cid) || 0) + 1);
+    });
+
+    const monthIncomeByCampus = new Map<string, number>();
+    thisMonthPayments
+      .filter((p) => p.amount > 0)
+      .forEach((p) => {
+        const cid = studentCampusMap.get(p.studentId) || selectedCampusId || 'unassigned';
+        monthIncomeByCampus.set(cid, (monthIncomeByCampus.get(cid) || 0) + p.amount);
+      });
+
+    const yearIncomeByCampus = new Map<string, number>();
+    thisYearPayments
+      .filter((p) => p.amount > 0)
+      .forEach((p) => {
+        const cid = studentCampusMap.get(p.studentId) || selectedCampusId || 'unassigned';
+        yearIncomeByCampus.set(cid, (yearIncomeByCampus.get(cid) || 0) + p.amount);
+      });
+
+    const campusIds = Array.from(
+      new Set([
+        ...studentCountByCampus.keys(),
+        ...monthIncomeByCampus.keys(),
+        ...yearIncomeByCampus.keys(),
+      ])
+    );
+
+    return campusIds
+      .map((campusId) => {
+        const monthIncome = monthIncomeByCampus.get(campusId) || 0;
+        const yearIncome = yearIncomeByCampus.get(campusId) || 0;
+        const studentCount = studentCountByCampus.get(campusId) || 0;
+        return {
+          id: campusId,
+          name:
+            campusNameMap.get(campusId) ||
+            (campusId === 'unassigned' ? (lang === 'zh' ? '未分配校区' : 'Unassigned') : campusId),
+          monthIncome,
+          yearIncome,
+          studentCount,
+          avgRevenuePerStudent: studentCount > 0 ? (yearIncome / studentCount).toFixed(0) : 0,
+        };
+      })
+      .sort((a, b) => b.yearIncome - a.yearIncome);
+  }, [payments, students, campuses, selectedCampusId, lang]);
 
   const teacherAnalytics = useMemo(() => {
     const thisMonthCourses = courses.filter(c => isThisMonth(parseISO(c.date)));
@@ -130,13 +310,10 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
   }, [teachers, courses]);
 
   const financialAnalytics = useMemo(() => {
-    const thisMonthPayments = payments.filter(p => isThisMonth(parseISO(p.date)));
-    const thisYearPayments = payments.filter(p => isThisYear(parseISO(p.date)));
-
-    const monthIncome = thisMonthPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
-    const monthExpense = thisMonthPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
-    const yearIncome = thisYearPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
-    const yearExpense = thisYearPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
+    const monthIncome = windowedPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
+    const monthExpense = windowedPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
+    const yearIncome = filteredPayments.filter(p => p.amount > 0).reduce((sum, p) => sum + p.amount, 0);
+    const yearExpense = filteredPayments.filter(p => p.amount < 0).reduce((sum, p) => sum + Math.abs(p.amount), 0);
 
     const avgMonthIncome = monthlyData.reduce((sum, m) => sum + m.income, 0) / Math.max(monthlyData.length, 1);
     const forecastNextMonth = avgMonthIncome * 1.05;
@@ -151,7 +328,7 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
       forecastNextMonth,
       profitRate: monthIncome > 0 ? (((monthIncome - monthExpense) / monthIncome) * 100).toFixed(1) : 0,
     };
-  }, [payments, monthlyData]);
+  }, [windowedPayments, filteredPayments, monthlyData]);
 
   const conversionFunnel = useMemo(() => {
     const total = leads.length;
@@ -188,16 +365,30 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
       '月份': m.monthFull,
       '课程数': m.courses,
       '已完成': m.completedCourses,
-      '收入': m.income,
-      '支出': m.expense,
-      '利润': m.profit,
+      '收入(元)': m.income,
+      '收入(展示)': formatCurrencyValue(m.income),
+      '支出(元)': m.expense,
+      '支出(展示)': formatCurrencyValue(m.expense),
+      '利润(元)': m.profit,
+      '利润(展示)': formatCurrencyValue(m.profit),
     }));
 
+    const summaryData = [
+      { 指标: lang === 'zh' ? '校区' : 'Campus', 数值: currentCampusName, 数值展示: currentCampusName },
+      { 指标: lang === 'zh' ? '时间窗口' : 'Window', 数值: analyticsWindow, 数值展示: lang === 'zh' ? `近${analyticsWindow}天` : `${analyticsWindow} days` },
+      { 指标: lang === 'zh' ? '状态筛选' : 'Status', 数值: analyticsStatusLabel, 数值展示: analyticsStatusLabel },
+      { 指标: lang === 'zh' ? '窗口收入' : 'Window Income', 数值: financialAnalytics.monthIncome, 数值展示: formatCurrencyValue(financialAnalytics.monthIncome) },
+      { 指标: lang === 'zh' ? '窗口支出' : 'Window Expense', 数值: financialAnalytics.monthExpense, 数值展示: formatCurrencyValue(financialAnalytics.monthExpense) },
+      { 指标: lang === 'zh' ? '窗口利润' : 'Window Profit', 数值: financialAnalytics.monthProfit, 数值展示: formatCurrencyValue(financialAnalytics.monthProfit) },
+      { 指标: lang === 'zh' ? '窗口记录数' : 'Window Payment Rows', 数值: windowedPayments.length, 数值展示: String(windowedPayments.length) },
+    ];
+
     exportMultipleSheetsToExcel([
+      { name: lang === 'zh' ? '筛选汇总' : 'Summary', data: summaryData },
       { name: '学员统计', data: studentData },
       { name: '教师绩效', data: teacherData },
       { name: '财务数据', data: financeData },
-    ], `经营分析报告_${format(new Date(), 'yyyy-MM-dd')}`);
+    ], `经营分析报告_${currentCampusName}_${format(new Date(), 'yyyy-MM-dd')}_${analyticsWindow}d_${analyticsStatus}`);
     
     showToast(lang === 'zh' ? 'Excel导出成功' : 'Excel exported', 'success');
   };
@@ -220,14 +411,14 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
     const financeData = monthlyData.map(m => ({
       month: m.month,
       courses: String(m.courses),
-      income: `¥${m.income}`,
-      expense: `¥${m.expense}`,
-      profit: `¥${m.profit}`,
+      income: formatCurrencyValue(m.income),
+      expense: formatCurrencyValue(m.expense),
+      profit: formatCurrencyValue(m.profit),
     }));
 
     exportReportToPDF({
       title: lang === 'zh' ? '经营分析报告' : 'Business Analytics Report',
-      period: format(new Date(), 'yyyy年M月'),
+      period: `${format(new Date(), 'yyyy年M月')} · ${currentCampusName} · ${lang === 'zh' ? `近${analyticsWindow}天` : `${analyticsWindow} days`} · ${analyticsStatusLabel}`,
       sections: [
         {
           title: lang === 'zh' ? '学员统计' : 'Student Statistics',
@@ -261,10 +452,53 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
           data: financeData,
         },
       ],
-      filename: `经营分析报告_${format(new Date(), 'yyyy-MM-dd')}`,
+      filename: `经营分析报告_${currentCampusName}_${format(new Date(), 'yyyy-MM-dd')}_${analyticsWindow}d_${analyticsStatus}`,
     });
     
     showToast(lang === 'zh' ? 'PDF导出成功' : 'PDF exported', 'success');
+  };
+
+  const handleCopyAnalyticsSnapshot = async () => {
+    const generatedAt = format(new Date(), 'yyyy-MM-dd HH:mm');
+    const text = [
+      lang === 'zh' ? `校区：${currentCampusName}` : `Campus: ${currentCampusName}`,
+      lang === 'zh' ? `窗口：近${analyticsWindow}天` : `Window: ${analyticsWindow} days`,
+      lang === 'zh' ? `状态：${analyticsStatusLabel}` : `Status: ${analyticsStatusLabel}`,
+      lang === 'zh'
+        ? `收入/支出/利润：${formatCurrencyValue(financialAnalytics.monthIncome)} / ${formatCurrencyValue(financialAnalytics.monthExpense)} / ${formatCurrencyValue(financialAnalytics.monthProfit)}`
+        : `Income/Expense/Profit: ${formatCurrencyValue(financialAnalytics.monthIncome)} / ${formatCurrencyValue(financialAnalytics.monthExpense)} / ${formatCurrencyValue(financialAnalytics.monthProfit)}`,
+      lang === 'zh' ? `生成时间：${generatedAt}` : `Generated: ${generatedAt}`,
+    ].join('\n');
+
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(lang === 'zh' ? '筛选快照已复制' : 'Snapshot copied', 'success');
+    } catch {
+      showToast(lang === 'zh' ? '复制失败' : 'Copy failed', 'error');
+    }
+  };
+
+  const handleCopyAnalyticsMarkdown = async () => {
+    const generatedAt = format(new Date(), 'yyyy-MM-dd HH:mm');
+    const markdown = [
+      `## ${lang === 'zh' ? '经营分析筛选快照' : 'Analytics Filter Snapshot'}`,
+      '',
+      `- ${lang === 'zh' ? '校区' : 'Campus'}: ${currentCampusName}`,
+      `- ${lang === 'zh' ? '窗口' : 'Window'}: ${lang === 'zh' ? `近${analyticsWindow}天` : `${analyticsWindow} days`}`,
+      `- ${lang === 'zh' ? '状态' : 'Status'}: ${analyticsStatusLabel}`,
+      `- ${lang === 'zh' ? '收入' : 'Income'}: ${formatCurrencyValue(financialAnalytics.monthIncome)}`,
+      `- ${lang === 'zh' ? '支出' : 'Expense'}: ${formatCurrencyValue(financialAnalytics.monthExpense)}`,
+      `- ${lang === 'zh' ? '利润' : 'Profit'}: ${formatCurrencyValue(financialAnalytics.monthProfit)}`,
+      `- ${lang === 'zh' ? '利润率' : 'Profit Rate'}: ${financialAnalytics.profitRate}%`,
+      `- ${lang === 'zh' ? '生成时间' : 'Generated'}: ${generatedAt}`,
+    ].join('\n');
+
+    try {
+      await navigator.clipboard.writeText(markdown);
+      showToast(lang === 'zh' ? 'Markdown 摘要已复制' : 'Markdown summary copied', 'success');
+    } catch {
+      showToast(lang === 'zh' ? '复制失败' : 'Copy failed', 'error');
+    }
   };
 
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -505,6 +739,75 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
           </div>
 
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-red-500" />
+              {lang === 'zh' ? '学员流失预警' : 'Churn Prediction'}
+            </h3>
+            <div className="grid grid-cols-3 gap-4 mb-4">
+              <div className="text-center p-4 bg-red-50 rounded-xl border border-red-200">
+                <p className="text-2xl font-bold text-red-600">{studentAnalytics.highRiskStudents.length}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '高风险' : 'High Risk'}</p>
+              </div>
+              <div className="text-center p-4 bg-amber-50 rounded-xl border border-amber-200">
+                <p className="text-2xl font-bold text-amber-600">{studentAnalytics.mediumRiskStudents.length}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '中风险' : 'Medium Risk'}</p>
+              </div>
+              <div className="text-center p-4 bg-blue-50 rounded-xl border border-blue-200">
+                <p className="text-2xl font-bold text-blue-600">{studentAnalytics.lowRiskStudents.length}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '低风险' : 'Low Risk'}</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {studentAnalytics.atRiskStudents.slice(0, 5).map(student => (
+                <div key={student.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                  <div>
+                    <p className="font-medium text-gray-900">{student.name}</p>
+                    <p className="text-xs text-gray-500">
+                      {lang === 'zh' ? '剩余课时' : 'Remaining'}: {student.remainingHours}
+                    </p>
+                  </div>
+                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                    student.remainingHours === 0 ? 'bg-red-100 text-red-700' :
+                    student.remainingHours < 5 ? 'bg-amber-100 text-amber-700' :
+                    'bg-blue-100 text-blue-700'
+                  }`}>
+                    {student.remainingHours === 0 ? (lang === 'zh' ? '需立即跟进' : 'Urgent') :
+                     student.remainingHours < 5 ? (lang === 'zh' ? '建议续费' : 'Suggest Renew') :
+                     (lang === 'zh' ? '关注中' : 'Monitoring')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <RefreshCw className="w-5 h-5 text-green-500" />
+              {lang === 'zh' ? '续费转化率分析' : 'Renewal Conversion Analysis'}
+            </h3>
+            <div className="grid grid-cols-3 gap-4 mb-4">
+              <div className="text-center p-4 bg-amber-50 rounded-xl">
+                <p className="text-2xl font-bold text-amber-600">{renewalAnalytics.needingRenewal}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '需续费' : 'Need Renew'}</p>
+              </div>
+              <div className="text-center p-4 bg-green-50 rounded-xl">
+                <p className="text-2xl font-bold text-green-600">{renewalAnalytics.renewed}</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '已续费' : 'Renewed'}</p>
+              </div>
+              <div className="text-center p-4 bg-indigo-50 rounded-xl">
+                <p className="text-2xl font-bold text-indigo-600">{renewalAnalytics.renewalRate}%</p>
+                <p className="text-sm text-gray-600">{lang === 'zh' ? '转化率' : 'Conversion Rate'}</p>
+              </div>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-green-400 to-indigo-500 rounded-full transition-all"
+                style={{ width: `${renewalAnalytics.renewalRate}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '学员课时分布' : 'Hours Distribution'}</h3>
             <div className="grid grid-cols-3 gap-4">
               <div className="text-center p-4 bg-red-50 rounded-xl">
@@ -538,8 +841,8 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
                 <span className="font-bold text-green-600">{studentAnalytics.retentionRate}%</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
-                <span className="text-gray-600">{lang === 'zh' ? '续费预警' : 'Renewal Alert'}</span>
-                <span className="font-bold text-amber-600">{studentAnalytics.lowHours + studentAnalytics.zeroHours}</span>
+                <span className="text-gray-600">{lang === 'zh' ? '风险学员数' : 'At Risk Students'}</span>
+                <span className="font-bold text-red-600">{studentAnalytics.atRiskStudents.length}</span>
               </div>
             </div>
           </div>
@@ -555,20 +858,20 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
             </div>
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className="text-3xl font-bold text-indigo-600">
-                {teacherAnalytics.reduce((sum, t) => sum + t.courses, 0)}
+                {teacherCapacityAnalytics.reduce((sum, t) => sum + t.courses, 0)}
               </p>
               <p className="text-sm text-gray-500">{lang === 'zh' ? '本月课程' : 'Month Courses'}</p>
             </div>
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className="text-3xl font-bold text-green-600">
-                {teacherAnalytics.reduce((sum, t) => sum + t.completedCourses, 0)}
+                {teacherCapacityAnalytics.reduce((sum, t) => sum + t.completedCourses, 0)}
               </p>
               <p className="text-sm text-gray-500">{lang === 'zh' ? '已完成' : 'Completed'}</p>
             </div>
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className="text-3xl font-bold text-purple-600">
-                {teacherAnalytics.length > 0 
-                  ? (teacherAnalytics.reduce((sum, t) => sum + t.completedCourses, 0) / teacherAnalytics.length).toFixed(1)
+                {teacherCapacityAnalytics.length > 0 
+                  ? (teacherCapacityAnalytics.reduce((sum, t) => sum + t.completedCourses, 0) / teacherCapacityAnalytics.length).toFixed(1)
                   : 0}
               </p>
               <p className="text-sm text-gray-500">{lang === 'zh' ? '人均课时' : 'Avg/Teacher'}</p>
@@ -576,9 +879,64 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
           </div>
 
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <Activity className="w-5 h-5 text-indigo-500" />
+              {lang === 'zh' ? '教师产能对比' : 'Teacher Capacity Comparison'}
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100">
+                    <th className="text-left py-2 px-3 text-gray-500 font-medium">{lang === 'zh' ? '教师' : 'Teacher'}</th>
+                    <th className="text-center py-2 px-3 text-gray-500 font-medium">{lang === 'zh' ? '课程数' : 'Courses'}</th>
+                    <th className="text-center py-2 px-3 text-gray-500 font-medium">{lang === 'zh' ? '已完成' : 'Completed'}</th>
+                    <th className="text-center py-2 px-3 text-gray-500 font-medium">{lang === 'zh' ? '学员数' : 'Students'}</th>
+                    <th className="text-center py-2 px-3 text-gray-500 font-medium">{lang === 'zh' ? '平均学员' : 'Avg Students'}</th>
+                    <th className="text-center py-2 px-3 text-gray-500 font-medium">{lang === 'zh' ? '产能利用率' : 'Capacity'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teacherCapacityAnalytics.map((teacher, i) => (
+                    <tr key={teacher.id} className="border-b border-gray-50 hover:bg-gray-50">
+                      <td className="py-2 px-3">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                            i === 0 ? 'bg-amber-500 text-white' : 
+                            i === 1 ? 'bg-gray-400 text-white' : 
+                            i === 2 ? 'bg-amber-700 text-white' : 
+                            'bg-gray-200 text-gray-600'
+                          }`}>
+                            {i + 1}
+                          </span>
+                          <span className="font-medium text-gray-900">{teacher.name}</span>
+                        </div>
+                      </td>
+                      <td className="text-center py-2 px-3 text-gray-900">{teacher.courses}</td>
+                      <td className="text-center py-2 px-3 text-green-600 font-medium">{teacher.completedCourses}</td>
+                      <td className="text-center py-2 px-3 text-indigo-600">{teacher.totalStudents}</td>
+                      <td className="text-center py-2 px-3 text-purple-600">{teacher.avgStudentsPerCourse}</td>
+                      <td className="text-center py-2 px-3">
+                        <div className="flex items-center justify-center gap-2">
+                          <div className="w-20 h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-gradient-to-r from-green-400 to-indigo-500 rounded-full"
+                              style={{ width: `${teacher.capacityUtilization}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-600">{teacher.capacityUtilization}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
             <h3 className="font-bold text-gray-900 mb-4">{lang === 'zh' ? '教师绩效排名' : 'Teacher Performance'}</h3>
             <div className="space-y-3">
-              {teacherAnalytics.slice(0, 10).map((teacher, i) => (
+              {teacherCapacityAnalytics.slice(0, 10).map((teacher, i) => (
                 <div key={teacher.id} className="flex items-center gap-4 p-3 rounded-xl bg-gray-50">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
                     i === 0 ? 'bg-amber-500' : i === 1 ? 'bg-gray-400' : i === 2 ? 'bg-amber-700' : 'bg-gray-300'
@@ -588,7 +946,7 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
                   <div className="flex-1">
                     <p className="font-medium text-gray-900">{teacher.name}</p>
                     <p className="text-xs text-gray-500">
-                      {lang === 'zh' ? `${teacher.courses}节课程 · ${teacher.completedCourses}节已完成` : `${teacher.courses} courses · ${teacher.completedCourses} completed`}
+                      {lang === 'zh' ? `${teacher.courses}节课程 · ${teacher.completedCourses}节已完成 · ${teacher.totalStudents}名学员` : `${teacher.courses} courses · ${teacher.completedCourses} completed · ${teacher.totalStudents} students`}
                     </p>
                   </div>
                   <div className="text-right">
@@ -604,24 +962,106 @@ export default function AnalyticsPage({ lang }: { lang: Language }) {
 
       {activeTab === 'finance' && (
         <div className="space-y-6">
+          <BusinessFilterBar
+            lang={lang}
+            windowDays={analyticsWindow}
+            onWindowDaysChange={setAnalyticsWindow}
+            status={analyticsStatus}
+            onStatusChange={setAnalyticsStatus}
+            onExport={handleExportExcel}
+            exportLabel={lang === 'zh' ? '导出经营分析' : 'Export Analytics'}
+          />
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-gray-600">
+                <span className="font-medium text-gray-900">{lang === 'zh' ? '筛选快照' : 'Filter Snapshot'}</span>
+                <span className="mx-2 text-gray-300">|</span>
+                <span>{lang === 'zh' ? `校区：${currentCampusName}` : `Campus: ${currentCampusName}`}</span>
+                <span className="mx-2 text-gray-300">|</span>
+                <span>{lang === 'zh' ? `近${analyticsWindow}天` : `${analyticsWindow} days`}</span>
+                <span className="mx-2 text-gray-300">|</span>
+                <span>{analyticsStatusLabel}</span>
+              </div>
+              <button
+                onClick={handleCopyAnalyticsSnapshot}
+                className="px-3 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 flex items-center gap-2"
+              >
+                <Copy className="w-4 h-4" />
+                {lang === 'zh' ? '复制条件' : 'Copy Snapshot'}
+              </button>
+              <button
+                onClick={handleCopyAnalyticsMarkdown}
+                className="px-3 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 flex items-center gap-2"
+              >
+                <FileText className="w-4 h-4" />
+                {lang === 'zh' ? '复制 Markdown 摘要' : 'Copy Markdown'}
+              </button>
+            </div>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className="text-3xl font-bold text-green-600">¥{financialAnalytics.monthIncome.toLocaleString()}</p>
-              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月收入' : 'Month Income'}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? `近${analyticsWindow}天收入` : `${analyticsWindow}d Income`}</p>
             </div>
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className="text-3xl font-bold text-red-600">¥{financialAnalytics.monthExpense.toLocaleString()}</p>
-              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月支出' : 'Month Expense'}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? `近${analyticsWindow}天支出` : `${analyticsWindow}d Expense`}</p>
             </div>
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className={`text-3xl font-bold ${financialAnalytics.monthProfit >= 0 ? 'text-indigo-600' : 'text-red-600'}`}>
                 ¥{financialAnalytics.monthProfit.toLocaleString()}
               </p>
-              <p className="text-sm text-gray-500">{lang === 'zh' ? '本月利润' : 'Month Profit'}</p>
+              <p className="text-sm text-gray-500">{lang === 'zh' ? `近${analyticsWindow}天利润` : `${analyticsWindow}d Profit`}</p>
             </div>
             <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
               <p className="text-3xl font-bold text-purple-600">{financialAnalytics.profitRate}%</p>
               <p className="text-sm text-gray-500">{lang === 'zh' ? '利润率' : 'Profit Rate'}</p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-indigo-500" />
+              {lang === 'zh' ? '校区营收对比' : 'Campus Revenue Comparison'}
+            </h3>
+            <div className="space-y-4">
+              {campusRevenueAnalytics.map((campus, i) => (
+                <div key={campus.id || campus.name} className="p-4 bg-gray-50 rounded-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
+                        i === 0 ? 'bg-amber-500' : i === 1 ? 'bg-gray-400' : i === 2 ? 'bg-amber-700' : 'bg-gray-300'
+                      }`}>
+                        {i + 1}
+                      </span>
+                      <span className="font-bold text-gray-900">{campus.name}</span>
+                    </div>
+                    <span className="text-lg font-bold text-green-600">¥{campus.yearIncome.toLocaleString()}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 mt-3">
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-gray-900">¥{campus.monthIncome.toLocaleString()}</p>
+                      <p className="text-xs text-gray-500">{lang === 'zh' ? '本月收入' : 'Month Revenue'}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-gray-900">{campus.studentCount}</p>
+                      <p className="text-xs text-gray-500">{lang === 'zh' ? '学员数' : 'Students'}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-gray-900">¥{campus.avgRevenuePerStudent}</p>
+                      <p className="text-xs text-gray-500">{lang === 'zh' ? '人均营收' : 'Avg/Student'}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-gradient-to-r from-green-400 to-indigo-500 rounded-full transition-all"
+                        style={{ width: `${(campus.yearIncome / Math.max(...campusRevenueAnalytics.map(c => c.yearIncome), 1)) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 

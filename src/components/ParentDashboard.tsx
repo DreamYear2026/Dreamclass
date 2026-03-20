@@ -1,19 +1,61 @@
-import React, { useState, useMemo } from 'react';
-import { Calendar, Clock, ChevronRight, User, Loader2, CheckCircle, Award, Star, BookOpen, MessageSquare, Bell, CreditCard, Sparkles, Heart } from 'lucide-react';
-import { Language } from '../types';
-import { useStudents, useCourses } from '../contexts/AppContext';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Calendar, Clock, ChevronRight, User, Loader2, CheckCircle, Star, BookOpen, MessageSquare, Bell, CreditCard, Sparkles, Heart } from 'lucide-react';
+import { Language, Payment, Notification, Homework } from '../types';
+import { useStudents, useCourses, useFeedbacks } from '../contexts/AppContext';
+import { useAuth } from '../contexts/AuthContext';
 import { parseISO, isAfter, format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import { api } from '../services/api';
 
 export default function ParentDashboard({ lang, studentId }: { lang: Language; studentId?: string }) {
   const { students, loading: studentsLoading } = useStudents();
   const { courses, loading: coursesLoading } = useCourses();
+  const { feedbacks, loading: feedbacksLoading } = useFeedbacks();
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'schedule' | 'progress'>('overview');
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [homeworks, setHomeworks] = useState<Homework[]>([]);
+  const [extraLoading, setExtraLoading] = useState(false);
 
-  const loading = studentsLoading || coursesLoading;
+  const loading = studentsLoading || coursesLoading || feedbacksLoading || extraLoading;
 
-  const student = studentId ? students.find(s => s.userId === studentId) || null : students[0] || null;
+  const student = useMemo(() => {
+    if (studentId) return students.find(s => s.id === studentId || s.userId === studentId) || null;
+    if (user) return students.find(s => s.userId === user.id) || null;
+    return null;
+  }, [students, studentId, user?.id]);
   const studentCourses = student ? courses.filter(c => c.studentId === student.id) : [];
+
+  useEffect(() => {
+    if (!user || !student) return;
+    let mounted = true;
+    const loadExtras = async () => {
+      try {
+        setExtraLoading(true);
+        const [notificationData, paymentData, homeworkData] = await Promise.all([
+          api.getNotifications(user.id),
+          api.getPayments(student.id),
+          api.getHomeworks(),
+        ]);
+        if (!mounted) return;
+        setNotifications(notificationData);
+        setPayments(paymentData);
+        setHomeworks(homeworkData.filter((h) => h.studentId === student.id));
+      } catch {
+        if (!mounted) return;
+        setNotifications([]);
+        setPayments([]);
+        setHomeworks([]);
+      } finally {
+        if (mounted) setExtraLoading(false);
+      }
+    };
+    loadExtras();
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id, student?.id]);
 
   const upcomingCourses = useMemo(() => {
     const now = new Date();
@@ -33,6 +75,32 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
   const completedCourses = useMemo(() => {
     return studentCourses.filter(c => c.status === 'completed');
   }, [studentCourses]);
+
+  const unreadNotifications = useMemo(() => notifications.filter((n) => !n.read).length, [notifications]);
+  const pendingPayments = useMemo(
+    () => payments.filter((p) => p.status === 'pending').reduce((sum, p) => sum + p.amount, 0),
+    [payments]
+  );
+  const pendingHomeworkCount = useMemo(
+    () => homeworks.filter((h) => h.status === 'pending').length,
+    [homeworks]
+  );
+  const recentPayments = useMemo(() => {
+    return payments
+      .slice()
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 5);
+  }, [payments]);
+  const latestFeedback = useMemo(() => {
+    if (!student) return null;
+    const scoped = feedbacks
+      .filter((f) => f.studentId === student.id)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return scoped[0] || null;
+  }, [feedbacks, student?.id]);
+  const contactTeacherId = useMemo(() => {
+    return upcomingCourses[0]?.teacherId || latestFeedback?.teacherId || null;
+  }, [upcomingCourses, latestFeedback?.teacherId]);
 
   const statCards = student ? [
     {
@@ -54,26 +122,26 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
       emoji: '✅'
     },
     {
-      title: lang === 'zh' ? '待上课程' : 'Upcoming',
-      value: upcomingCourses.length,
-      icon: Calendar,
+      title: lang === 'zh' ? '待完成作业' : 'Pending Homework',
+      value: pendingHomeworkCount,
+      icon: BookOpen,
       gradient: 'from-[#4ECDC4] to-[#7EDDD6]',
       bg: 'bg-teal-50',
       text: 'text-[#4ECDC4]',
-      emoji: '📅'
+      emoji: '📝'
     },
     {
-      title: lang === 'zh' ? '当前级别' : 'Current Level',
-      value: student.level,
-      icon: Award,
+      title: lang === 'zh' ? '未读通知' : 'Unread Notices',
+      value: unreadNotifications,
+      icon: Bell,
       gradient: 'from-[#A29BFE] to-[#B8B3FF]',
       bg: 'bg-purple-50',
       text: 'text-[#A29BFE]',
-      emoji: '🏆'
+      emoji: '🔔'
     }
   ] : [];
 
-  if (loading || !student) {
+  if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center h-[60vh]">
         <div className="text-center">
@@ -83,6 +151,14 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
           </div>
           <p className="mt-4 text-gray-500">{lang === 'zh' ? '加载中...' : 'Loading...'}</p>
         </div>
+      </div>
+    );
+  }
+
+  if (!student) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-[60vh]">
+        <p className="text-gray-500">{lang === 'zh' ? '暂无学员信息' : 'No student information'}</p>
       </div>
     );
   }
@@ -289,15 +365,15 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
                     {[1, 2, 3, 4, 5].map(i => (
                       <Star
                         key={i}
-                        className={`w-4 h-4 ${i <= 4 ? 'text-[#FFE66D] fill-[#FFE66D]' : 'text-gray-300'}`}
+                        className={`w-4 h-4 ${i <= (latestFeedback?.rating || 0) ? 'text-[#FFE66D] fill-[#FFE66D]' : 'text-gray-300'}`}
                       />
                     ))}
                   </div>
                   <p className="text-gray-700 text-sm leading-relaxed italic">
-                    "{lang === 'zh' ? '本周进步很大！继续练习音阶，保持良好的学习状态。' : 'Great progress this week! Keep practicing the scales and maintain good study habits.'}"
+                    "{latestFeedback?.content || (lang === 'zh' ? '暂无最新反馈' : 'No recent feedback')}"
                   </p>
                   <p className="text-xs text-gray-500 mt-2">
-                    {lang === 'zh' ? '— 老师 昨天' : '— Teacher Yesterday'}
+                    {latestFeedback ? `${lang === 'zh' ? '— 最新于 ' : '— Updated '} ${format(parseISO(latestFeedback.date), 'MM-dd HH:mm')}` : (lang === 'zh' ? '— 待老师更新' : '— Waiting for update')}
                   </p>
                 </div>
               </div>
@@ -310,11 +386,34 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
                 <Sparkles className="w-4 h-4 text-[#FFE66D]" />
                 {lang === 'zh' ? '快捷链接' : 'Quick Links'}
               </h3>
+              <div className="mb-3 text-xs text-gray-500">
+                {lang === 'zh' ? `待缴费用：¥${pendingPayments.toLocaleString()}` : `Pending payments: ¥${pendingPayments.toLocaleString()}`}
+              </div>
               <div className="space-y-2">
-                <QuickLink icon={<Calendar className="w-4 h-4" />} label={lang === 'zh' ? '申请调课' : 'Request Reschedule'} color="#FF6B6B" />
-                <QuickLink icon={<MessageSquare className="w-4 h-4" />} label={lang === 'zh' ? '联系老师' : 'Contact Teacher'} color="#4ECDC4" />
-                <QuickLink icon={<Bell className="w-4 h-4" />} label={lang === 'zh' ? '学校通知' : 'School Announcements'} color="#A29BFE" />
-                <QuickLink icon={<CreditCard className="w-4 h-4" />} label={lang === 'zh' ? '账单记录' : 'Billing History'} color="#95E1A3" />
+                <QuickLink
+                  icon={<Calendar className="w-4 h-4" />}
+                  label={lang === 'zh' ? '申请调课' : 'Request Reschedule'}
+                  color="#FF6B6B"
+                  onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'schedule' } }))}
+                />
+                <QuickLink
+                  icon={<MessageSquare className="w-4 h-4" />}
+                  label={lang === 'zh' ? '联系老师' : 'Contact Teacher'}
+                  color="#4ECDC4"
+                  onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'messages', teacherId: contactTeacherId } }))}
+                />
+                <QuickLink
+                  icon={<Bell className="w-4 h-4" />}
+                  label={lang === 'zh' ? '学校通知' : 'School Announcements'}
+                  color="#A29BFE"
+                  onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'parent-notifications' } }))}
+                />
+                <QuickLink
+                  icon={<CreditCard className="w-4 h-4" />}
+                  label={lang === 'zh' ? '账单记录' : 'Billing History'}
+                  color="#95E1A3"
+                  onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'payments' } }))}
+                />
               </div>
             </div>
 
@@ -326,30 +425,25 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
                 {lang === 'zh' ? '最近消费' : 'Recent Billing'}
               </h3>
               <div className="space-y-3">
-                <div className="flex items-center justify-between p-3 rounded-xl bg-gradient-to-r from-green-50 to-white border border-green-100">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#95E1A3] to-[#7DD389] flex items-center justify-center shadow-sm">
-                      <CheckCircle className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-900">{lang === 'zh' ? '购买课时' : 'Purchase Hours'}</p>
-                      <p className="text-xs text-gray-500">Oct 15, 2023</p>
-                    </div>
+                {recentPayments.length === 0 ? (
+                  <div className="text-center py-10 text-gray-500">
+                    <CreditCard className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+                    <p className="text-sm">{lang === 'zh' ? '暂无消费记录' : 'No billing records'}</p>
                   </div>
-                  <p className="font-bold bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] bg-clip-text text-transparent">¥1,200</p>
-                </div>
-                <div className="flex items-center justify-between p-3 rounded-xl bg-gradient-to-r from-green-50 to-white border border-green-100">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#95E1A3] to-[#7DD389] flex items-center justify-center shadow-sm">
-                      <CheckCircle className="w-5 h-5 text-white" />
+                ) : recentPayments.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between p-3 rounded-xl bg-gradient-to-r from-green-50 to-white border border-green-100">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#95E1A3] to-[#7DD389] flex items-center justify-center shadow-sm">
+                        <CheckCircle className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900">{p.description || (lang === 'zh' ? '购买课时' : 'Purchase Hours')}</p>
+                        <p className="text-xs text-gray-500">{format(parseISO(p.date), 'yyyy-MM-dd')}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-gray-900">{lang === 'zh' ? '购买课时' : 'Purchase Hours'}</p>
-                      <p className="text-xs text-gray-500">Sep 20, 2023</p>
-                    </div>
+                    <p className="font-bold bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] bg-clip-text text-transparent">¥{p.amount.toLocaleString()}</p>
                   </div>
-                  <p className="font-bold bg-gradient-to-r from-[#FF6B6B] to-[#FF8E8E] bg-clip-text text-transparent">¥1,500</p>
-                </div>
+                ))}
               </div>
             </div>
           </div>
@@ -359,9 +453,9 @@ export default function ParentDashboard({ lang, studentId }: { lang: Language; s
   );
 }
 
-function QuickLink({ icon, label, color }: { icon: React.ReactNode, label: string, color: string }) {
+function QuickLink({ icon, label, color, onClick }: { icon: React.ReactNode, label: string, color: string, onClick: () => void }) {
   return (
-    <button className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-all text-left group">
+    <button onClick={onClick} className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-all text-left group">
       <div className="flex items-center text-gray-700 group-hover:text-gray-900 transition">
         <div className="p-2 rounded-lg mr-3 transition" style={{ backgroundColor: `${color}15` }}>
           <span style={{ color }}>{icon}</span>

@@ -13,6 +13,28 @@ export interface BackupData {
   campuses: Campus[];
 }
 
+export interface BackupRecord {
+  id: string;
+  name: string;
+  type: 'full' | 'differential';
+  createdAt: string;
+  size: number;
+  data: BackupData;
+  parentBackupId?: string;
+}
+
+export interface BackupSchedule {
+  enabled: boolean;
+  interval: 'daily' | 'weekly' | 'custom';
+  time: string;
+  day?: number;
+  retentionDays: number;
+}
+
+const STORAGE_KEY_BACKUPS = 'dreamyear_backups';
+const STORAGE_KEY_SCHEDULE = 'dreamyear_backup_schedule';
+const STORAGE_KEY_LAST_BACKUP = 'dreamyear_last_backup';
+
 export const createBackup = (data: Omit<BackupData, 'version' | 'createdAt'>): BackupData => {
   return {
     version: '1.0.0',
@@ -80,4 +102,114 @@ export const getBackupSummary = (backup: BackupData) => {
     leaveRequests: backup.leaveRequests?.length || 0,
     campuses: backup.campuses?.length || 0,
   };
+};
+
+export const saveBackupToLocal = (backupData: BackupData, type: 'full' | 'differential' = 'full', parentBackupId?: string): BackupRecord => {
+  const backups = getLocalBackups();
+  const dataStr = JSON.stringify(backupData);
+  const record: BackupRecord = {
+    id: `backup-${Date.now()}`,
+    name: `${type === 'full' ? '完整' : '差异'}备份 - ${new Date().toLocaleString('zh-CN')}`,
+    type,
+    createdAt: backupData.createdAt,
+    size: new Blob([dataStr]).size,
+    data: backupData,
+    parentBackupId,
+  };
+  
+  backups.unshift(record);
+  
+  const schedule = getBackupSchedule();
+  if (schedule.enabled) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - schedule.retentionDays);
+    const filteredBackups = backups.filter(b => new Date(b.createdAt) > cutoffDate);
+    localStorage.setItem(STORAGE_KEY_BACKUPS, JSON.stringify(filteredBackups.slice(0, 50)));
+  } else {
+    localStorage.setItem(STORAGE_KEY_BACKUPS, JSON.stringify(backups.slice(0, 50)));
+  }
+  
+  localStorage.setItem(STORAGE_KEY_LAST_BACKUP, backupData.createdAt);
+  return record;
+};
+
+export const getLocalBackups = (): BackupRecord[] => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY_BACKUPS);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const deleteLocalBackup = (backupId: string): void => {
+  const backups = getLocalBackups();
+  const filtered = backups.filter(b => b.id !== backupId);
+  localStorage.setItem(STORAGE_KEY_BACKUPS, JSON.stringify(filtered));
+};
+
+export const createDifferentialBackup = (currentData: Omit<BackupData, 'version' | 'createdAt'>, lastFullBackup: BackupData): BackupData => {
+  const current = createBackup(currentData);
+  const differential: Partial<BackupData> = {
+    version: current.version,
+    createdAt: current.createdAt,
+  };
+
+  if (JSON.stringify(current.students) !== JSON.stringify(lastFullBackup.students)) {
+    differential.students = current.students;
+  }
+  if (JSON.stringify(current.courses) !== JSON.stringify(lastFullBackup.courses)) {
+    differential.courses = current.courses;
+  }
+  if (JSON.stringify(current.teachers) !== JSON.stringify(lastFullBackup.teachers)) {
+    differential.teachers = current.teachers;
+  }
+  if (JSON.stringify(current.payments) !== JSON.stringify(lastFullBackup.payments)) {
+    differential.payments = current.payments;
+  }
+  if (JSON.stringify(current.feedbacks) !== JSON.stringify(lastFullBackup.feedbacks)) {
+    differential.feedbacks = current.feedbacks;
+  }
+  if (JSON.stringify(current.homeworks) !== JSON.stringify(lastFullBackup.homeworks)) {
+    differential.homeworks = current.homeworks;
+  }
+  if (JSON.stringify(current.leaveRequests) !== JSON.stringify(lastFullBackup.leaveRequests)) {
+    differential.leaveRequests = current.leaveRequests;
+  }
+  if (JSON.stringify(current.campuses) !== JSON.stringify(lastFullBackup.campuses)) {
+    differential.campuses = current.campuses;
+  }
+
+  return { ...lastFullBackup, ...differential };
+};
+
+export const getBackupSchedule = (): BackupSchedule => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY_SCHEDULE);
+    return data ? JSON.parse(data) : {
+      enabled: false,
+      interval: 'daily',
+      time: '02:00',
+      retentionDays: 30,
+    };
+  } catch {
+    return {
+      enabled: false,
+      interval: 'daily',
+      time: '02:00',
+      retentionDays: 30,
+    };
+  }
+};
+
+export const saveBackupSchedule = (schedule: BackupSchedule): void => {
+  localStorage.setItem(STORAGE_KEY_SCHEDULE, JSON.stringify(schedule));
+};
+
+export const getLastBackupTime = (): string | null => {
+  return localStorage.getItem(STORAGE_KEY_LAST_BACKUP);
+};
+
+export const mergeDifferentialBackup = (fullBackup: BackupData, differentialBackup: Partial<BackupData>): BackupData => {
+  return { ...fullBackup, ...differentialBackup };
 };

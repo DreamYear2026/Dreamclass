@@ -7,12 +7,16 @@ interface AppDataContextType {
   courses: Course[];
   teachers: Teacher[];
   campuses: Campus[];
+  feedbacks: Feedback[];
+  selectedCampusId: string | null;
+  setSelectedCampusId: (id: string | null) => void;
   loading: boolean;
   error: string | null;
   refreshStudents: () => Promise<void>;
   refreshCourses: () => Promise<void>;
   refreshTeachers: () => Promise<void>;
   refreshCampuses: () => Promise<void>;
+  refreshFeedbacks: () => Promise<void>;
   addStudent: (student: Omit<Student, 'id'>) => Promise<Student>;
   updateStudent: (id: string, data: Partial<Student>) => Promise<void>;
   deleteStudent: (id: string) => Promise<void>;
@@ -20,8 +24,8 @@ interface AppDataContextType {
   updateCourse: (id: string, course: Partial<Course>) => Promise<void>;
   updateCourseStatus: (id: string, status: Course['status']) => Promise<void>;
   deleteCourse: (id: string) => Promise<void>;
-  addTeacher: (teacher: Omit<Teacher, 'id'>) => Promise<Teacher>;
-  updateTeacher: (id: string, data: Partial<Teacher>) => Promise<void>;
+  addTeacher: (teacher: Omit<Teacher, 'id'> & { username?: string; password?: string }) => Promise<Teacher>;
+  updateTeacher: (id: string, data: Partial<Teacher> & { username?: string; password?: string }) => Promise<void>;
   deleteTeacher: (id: string) => Promise<void>;
   markAttendance: (data: { courseId: string; studentId: string; status: string; date: string }) => Promise<void>;
   getAttendanceByStudent: (studentId: string) => Promise<Attendance[]>;
@@ -29,13 +33,32 @@ interface AppDataContextType {
 
 const AppDataContext = createContext<AppDataContextType | null>(null);
 
+const SELECTED_CAMPUS_KEY = 'dreamyear_selected_campus_id';
+
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [students, setStudents] = useState<Student[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [campuses, setCampuses] = useState<Campus[]>([]);
+  const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
+  const [selectedCampusId, setSelectedCampusIdState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(SELECTED_CAMPUS_KEY);
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const setSelectedCampusId = useCallback((id: string | null) => {
+    setSelectedCampusIdState(id);
+    try {
+      if (id) localStorage.setItem(SELECTED_CAMPUS_KEY, id);
+      else localStorage.removeItem(SELECTED_CAMPUS_KEY);
+    } catch {
+    }
+  }, []);
 
   const refreshStudents = useCallback(async () => {
     try {
@@ -74,9 +97,24 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     try {
       const data = await api.getCampuses();
       setCampuses(data);
+      setSelectedCampusIdState((prev) => {
+        if (prev && data.some((c: Campus) => c.id === prev)) return prev;
+        return data[0]?.id || null;
+      });
       setError(null);
     } catch (err) {
       setError('Failed to fetch campuses');
+      throw err;
+    }
+  }, []);
+
+  const refreshFeedbacks = useCallback(async () => {
+    try {
+      const data = await api.getFeedbacks();
+      setFeedbacks(data);
+      setError(null);
+    } catch (err) {
+      setError('Failed to fetch feedbacks');
       throw err;
     }
   }, []);
@@ -85,7 +123,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     const initData = async () => {
       try {
         setLoading(true);
-        await Promise.all([refreshStudents(), refreshCourses(), refreshTeachers(), refreshCampuses()]);
+        await Promise.all([refreshStudents(), refreshCourses(), refreshTeachers(), refreshCampuses(), refreshFeedbacks()]);
       } catch (err) {
         console.error('Failed to initialize data', err);
       } finally {
@@ -93,7 +131,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       }
     };
     initData();
-  }, [refreshStudents, refreshCourses, refreshTeachers, refreshCampuses]);
+  }, [refreshStudents, refreshCourses, refreshTeachers, refreshCampuses, refreshFeedbacks]);
 
   const addStudent = useCallback(async (student: Omit<Student, 'id'>) => {
     const newStudent = await api.addStudent(student);
@@ -132,16 +170,23 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setCourses(prev => prev.filter(c => c.id !== id));
   }, []);
 
-  const addTeacher = useCallback(async (teacher: Omit<Teacher, 'id'>) => {
+  const addTeacher = useCallback(async (teacher: Omit<Teacher, 'id'> & { username?: string; password?: string }) => {
     const newTeacher = await api.addTeacher(teacher);
-    setTeachers(prev => [...prev, newTeacher]);
+    await refreshTeachers();
     return newTeacher;
-  }, []);
+  }, [refreshTeachers]);
 
-  const updateTeacher = useCallback(async (id: string, data: Partial<Teacher>) => {
-    await api.updateTeacher(id, data);
-    setTeachers(prev => prev.map(t => t.id === id ? { ...t, ...data } : t));
-  }, []);
+  const updateTeacher = useCallback(async (id: string, data: Partial<Teacher> & { username?: string; password?: string }) => {
+    try {
+      const updatedTeacher = await api.updateTeacher(id, data);
+      setTeachers(prev => prev.map(t => t.id === id ? updatedTeacher : t));
+    } catch (error) {
+      console.error('Failed to update teacher:', error);
+      // fallback to full refresh if manual update fails
+      await refreshTeachers();
+      throw error;
+    }
+  }, [refreshTeachers]);
 
   const deleteTeacher = useCallback(async (id: string) => {
     await api.deleteTeacher(id);
@@ -161,18 +206,35 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     return api.getAttendanceByStudent(studentId);
   }, []);
 
+  const campusStudentIds = selectedCampusId ? new Set(students.filter((s) => s.campusId === selectedCampusId).map((s) => s.id)) : null;
+  const scopedStudents = selectedCampusId ? students.filter((s) => s.campusId === selectedCampusId) : students;
+  const scopedCourses =
+    selectedCampusId
+      ? courses.filter((c) => c.campusId === selectedCampusId || (c.campusId == null && campusStudentIds?.has(c.studentId)))
+      : courses;
+  const campusTeacherIds = selectedCampusId ? new Set(scopedCourses.map((c) => c.teacherId)) : null;
+  const scopedTeachers =
+    selectedCampusId
+      ? teachers.filter((tch) => tch.campusId === selectedCampusId || (tch.campusId == null && campusTeacherIds?.has(tch.id)))
+      : teachers;
+  const scopedFeedbacks = selectedCampusId && campusStudentIds ? feedbacks.filter((f) => campusStudentIds.has(f.studentId)) : feedbacks;
+
   return (
     <AppDataContext.Provider value={{
-      students,
-      courses,
-      teachers,
+      students: scopedStudents,
+      courses: scopedCourses,
+      teachers: scopedTeachers,
       campuses,
+      feedbacks: scopedFeedbacks,
+      selectedCampusId,
+      setSelectedCampusId,
       loading,
       error,
       refreshStudents,
       refreshCourses,
       refreshTeachers,
       refreshCampuses,
+      refreshFeedbacks,
       addStudent,
       updateStudent,
       deleteStudent,
@@ -215,6 +277,11 @@ export function useTeachers() {
 }
 
 export function useCampuses() {
-  const { campuses, loading, error, refreshCampuses } = useAppData();
-  return { campuses, loading, error, refreshCampuses };
+  const { campuses, selectedCampusId, setSelectedCampusId, loading, error, refreshCampuses } = useAppData();
+  return { campuses, selectedCampusId, setSelectedCampusId, loading, error, refreshCampuses };
+}
+
+export function useFeedbacks() {
+  const { feedbacks, loading, error, refreshFeedbacks } = useAppData();
+  return { feedbacks, loading, error, refreshFeedbacks };
 }

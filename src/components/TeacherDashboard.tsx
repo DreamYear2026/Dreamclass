@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Calendar, MessageSquare, Loader2, Clock, Users, CheckCircle, Star, TrendingUp, BookOpen, Award, Plus, ChevronRight, Sparkles, Heart, Bell } from 'lucide-react';
 import { Language } from '../types';
 import { useTranslation } from '../i18n';
-import { useCourses, useStudents } from '../contexts/AppContext';
+import { useCourses, useStudents, useTeachers } from '../contexts/AppContext';
 import { useAuth } from '../contexts/AuthContext';
 import { parseISO, isToday, isAfter, format, startOfWeek, endOfWeek, eachDayOfInterval } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -13,13 +13,21 @@ export default function TeacherDashboard({ lang }: { lang: Language }) {
   const { user } = useAuth();
   const { courses, loading: coursesLoading } = useCourses();
   const { students, loading: studentsLoading } = useStudents();
+  const { teachers, loading: teachersLoading } = useTeachers();
   const [activeTab, setActiveTab] = useState<'overview' | 'schedule' | 'students'>('overview');
 
-  const loading = coursesLoading || studentsLoading;
+  const loading = coursesLoading || studentsLoading || teachersLoading;
+
+  const currentTeacher = useMemo(() => {
+    if (!user) return null;
+    return teachers.find((t) => (t as any).userId === user.id || t.name === user.name) || null;
+  }, [teachers, user?.id, user?.name]);
 
   const teacherCourses = useMemo(() => {
-    return courses.filter(c => c.teacherId === user?.id);
-  }, [courses, user?.id]);
+    if (!user) return [];
+    const teacherId = currentTeacher?.id;
+    return courses.filter(c => c.teacherId === teacherId || c.teacherId === user.id || c.teacherName === user.name);
+  }, [courses, currentTeacher?.id, user?.id, user?.name]);
 
   const myStudents = useMemo(() => {
     const studentIds = new Set(teacherCourses.map(c => c.studentId));
@@ -152,7 +160,7 @@ export default function TeacherDashboard({ lang }: { lang: Language }) {
       icon: Bell,
       color: 'text-purple-600',
       bg: 'bg-purple-50',
-      action: () => {}
+      action: () => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'notifications' } }))
     }
   ];
 

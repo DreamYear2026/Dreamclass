@@ -22,9 +22,13 @@ interface AuthRequest extends Request {
   user?: SessionUser;
 }
 
-const ALLOWED_USER_FIELDS = ['name', 'email', 'phone'];
+const ALLOWED_USER_FIELDS = ['name', 'email', 'phone', 'avatar'];
 const ALLOWED_STUDENT_FIELDS = ['name', 'age', 'level', 'parentName', 'parentPhone', 'remainingHours', 'notes', 'status', 'tags', 'campusId'];
-const ALLOWED_TEACHER_FIELDS = ['name', 'phone', 'email', 'specialization', 'status'];
+const ALLOWED_TEACHER_FIELDS = ['name', 'phone', 'email', 'specialization', 'status', 'campusId'];
+const ALLOWED_LEAD_FIELDS = ['name', 'phone', 'email', 'address', 'age', 'source', 'status', 'notes', 'interests', 'tags', 'assignedTo', 'assignedName', 'studentId', 'nextFollowUp', 'trialDate', 'lastContacted'];
+const ALLOWED_CAMPAIGN_FIELDS = ['name', 'type', 'status', 'description', 'startDate', 'endDate', 'targetAudience', 'budget', 'conversionGoal', 'actualConversions'];
+const ALLOWED_COUPON_FIELDS = ['code', 'type', 'value', 'minPurchase', 'maxDiscount', 'status', 'validFrom', 'validUntil', 'usageLimit', 'usedCount', 'applicableCourses', 'campaignId'];
+const ALLOWED_REFERRAL_FIELDS = ['referrerId', 'referrerName', 'referrerPhone', 'referredName', 'referredPhone', 'status', 'rewardType', 'rewardValue', 'rewardClaimed', 'leadId', 'studentId', 'completedAt'];
 
 const SESSION_EXPIRY_DAYS = 7;
 
@@ -69,7 +73,7 @@ const requireAuth = (req: AuthRequest, res: Response, next: NextFunction) => {
 };
 
 const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
-  if (req.user?.role !== 'admin') {
+  if (req.user?.role !== 'admin' && req.user?.role !== 'super_admin') {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();
@@ -77,12 +81,60 @@ const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
 
 const requireRole = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!req.user) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    if (req.user.role === 'super_admin' && roles.includes('admin')) {
+      return next();
+    }
+    if (!roles.includes(req.user.role)) {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
     next();
   };
 };
+
+function isAdmin(req: AuthRequest): boolean {
+  return req.user?.role === 'admin' || req.user?.role === 'super_admin';
+}
+
+function isTeacher(req: AuthRequest): boolean {
+  return req.user?.role === 'teacher';
+}
+
+function canAccessStudent(req: AuthRequest, studentId: string): boolean {
+  if (isAdmin(req)) return true;
+  if (!req.user) return false;
+  if (req.user.role === 'parent') {
+    const student = db.prepare('SELECT userId FROM students WHERE id = ?').get(studentId) as { userId: string | null } | undefined;
+    return !!student && student.userId === req.user.userId;
+  }
+  if (req.user.role === 'teacher') {
+    const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+    const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+    if (allowedTeacherIds.length === 0) return false;
+    const placeholders = allowedTeacherIds.map(() => '?').join(', ');
+    const query = `
+      SELECT COUNT(1) as count FROM courses
+      WHERE studentId = ?
+      AND (${allowedTeacherIds.length > 0 ? `teacherId IN (${placeholders})` : '0=1'})
+    `;
+    const params: any[] = [studentId, ...allowedTeacherIds];
+    const row = db.prepare(query).get(...params) as { count: number } | undefined;
+    return (row?.count || 0) > 0;
+  }
+  return false;
+}
+
+function teacherEntityIdsByUserId(userId: string): string[] {
+  const rows = db.prepare('SELECT id FROM teachers WHERE userId = ?').all(userId) as Array<{ id: string }>;
+  return rows.map((r) => r.id);
+}
+
+function primaryTeacherByUserId(userId: string): { id: string; name: string } | null {
+  const teacher = db.prepare('SELECT id, name FROM teachers WHERE userId = ? LIMIT 1').get(userId) as { id: string; name: string } | undefined;
+  return teacher || null;
+}
 
 function validateFields(fields: Record<string, any>, allowed: string[]): { updates: string[]; values: any[] } {
   const updates: string[] = [];
@@ -136,7 +188,7 @@ const swaggerOptions = {
       description: '钢琴艺术培训教务管理系统 API 文档',
     },
     servers: [
-      { url: 'http://localhost:3000', description: '开发服务器' },
+      { url: 'http://localhost:3006', description: '开发服务器' },
     ],
     components: {
       securitySchemes: {
@@ -153,7 +205,7 @@ const swaggerOptions = {
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3006;
 
   app.use(express.json());
   app.use(cookieParser());
@@ -161,17 +213,23 @@ async function startServer() {
 
   cleanExpiredSessions();
 
-  app.use('/uploads', express.static(uploadsDir));
+  app.use('/uploads', requireAuth, express.static(uploadsDir));
 
   const swaggerSpec = swaggerJsdoc(swaggerOptions);
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+  const isProductionEnv = process.env.NODE_ENV === 'production';
   const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 5,
+    windowMs: isProductionEnv ? 15 * 60 * 1000 : 5 * 60 * 1000,
+    max: isProductionEnv ? 5 : 50,
     message: { error: '登录尝试次数过多，请稍后再试' },
     standardHeaders: true,
     legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => {
+      const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : 'anonymous';
+      return `${req.ip}:${username}`;
+    },
   });
 
   const apiLimiter = rateLimit({
@@ -210,12 +268,13 @@ async function startServer() {
    */
   app.post('/api/auth/login', loginLimiter, (req: AuthRequest, res) => {
     const { username, password } = req.body;
+    const normalizedUsername = typeof username === 'string' ? username.trim() : '';
     
-    if (!username || !password) {
+    if (!normalizedUsername || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
+    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(normalizedUsername) as any;
     
     if (!user || !bcrypt.compareSync(password, user.password)) {
       return res.status(401).json({ error: 'Invalid username or password' });
@@ -268,10 +327,10 @@ async function startServer() {
    *         description: 更新成功
    */
   app.patch('/api/auth/me', requireAuth, (req: AuthRequest, res) => {
-    const { name, email, phone } = req.body;
+    const { name, email, phone, avatar } = req.body;
     const session = req.user!;
     
-    const { updates, values } = validateFields({ name, email, phone }, ALLOWED_USER_FIELDS);
+    const { updates, values } = validateFields({ name, email, phone, avatar }, ALLOWED_USER_FIELDS);
     
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No valid fields to update' });
@@ -452,7 +511,22 @@ async function startServer() {
    *         description: 学员列表
    */
   app.get('/api/students', requireAuth, (req: AuthRequest, res) => {
-    const students = db.prepare('SELECT * FROM students').all() as any[];
+    let query = 'SELECT DISTINCT s.* FROM students s';
+    const params: any[] = [];
+    if (req.user?.role === 'parent') {
+      query += ' WHERE s.userId = ?';
+      params.push(req.user.userId);
+    } else if (req.user?.role === 'teacher') {
+      const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+      const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+      if (allowedTeacherIds.length > 0) {
+        query += ` JOIN courses c ON c.studentId = s.id WHERE c.teacherId IN (${allowedTeacherIds.map(() => '?').join(', ')})`;
+        params.push(...allowedTeacherIds);
+      } else {
+        query += ' WHERE 1 = 0';
+      }
+    }
+    const students = db.prepare(query).all(...params) as any[];
     const parsedStudents = students.map(s => ({
       ...s,
       tags: s.tags ? JSON.parse(s.tags) : []
@@ -477,8 +551,11 @@ async function startServer() {
 
   // 用户管理 API
   app.get('/api/users', requireAuth, requireAdmin, (req: AuthRequest, res) => {
-    const users = db.prepare('SELECT id, username, name, role, permissions, createdAt FROM users ORDER BY createdAt DESC').all();
-    res.json(users);
+    const users = db.prepare('SELECT id, username, name, role, permissions, createdAt FROM users ORDER BY createdAt DESC').all() as Array<any>;
+    res.json(users.map((u) => ({
+      ...u,
+      permissions: u.permissions ? JSON.parse(u.permissions) : [],
+    })));
   });
 
   app.post('/api/users', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
@@ -491,6 +568,12 @@ async function startServer() {
     const existingUser = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
     if (existingUser) {
       return res.status(400).json({ error: '用户名已存在' });
+    }
+    if (req.user?.role === 'admin' && (role === 'admin' || role === 'super_admin')) {
+      return res.status(403).json({ error: 'Only super admin can manage admin accounts' });
+    }
+    if (role === 'super_admin') {
+      return res.status(403).json({ error: 'Super admin account cannot be created via API' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -511,6 +594,17 @@ async function startServer() {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) {
       return res.status(404).json({ error: '用户不存在' });
+    }
+    if ((user as any).role === 'super_admin') {
+      return res.status(403).json({ error: 'Super admin account cannot be modified' });
+    }
+    if (req.user?.role === 'admin') {
+      if ((user as any).role === 'admin') {
+        return res.status(403).json({ error: 'Only super admin can manage admin accounts' });
+      }
+      if (role === 'admin' || role === 'super_admin') {
+        return res.status(403).json({ error: 'Only super admin can manage admin accounts' });
+      }
     }
 
     if (password) {
@@ -533,6 +627,15 @@ async function startServer() {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) {
       return res.status(404).json({ error: '用户不存在' });
+    }
+    if (id === req.user?.userId) {
+      return res.status(400).json({ error: '不能删除当前登录账号' });
+    }
+    if ((user as any).role === 'super_admin') {
+      return res.status(403).json({ error: 'Super admin account cannot be deleted' });
+    }
+    if (req.user?.role === 'admin' && (user as any).role === 'admin') {
+      return res.status(403).json({ error: 'Only super admin can manage admin accounts' });
     }
 
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
@@ -733,6 +836,9 @@ async function startServer() {
    *         description: 学员不存在
    */
   app.get('/api/students/:id', requireAuth, (req: AuthRequest, res) => {
+    if (!canAccessStudent(req, req.params.id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const student = db.prepare('SELECT * FROM students WHERE id = ?').get(req.params.id) as any;
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
@@ -773,22 +879,31 @@ async function startServer() {
    *       201:
    *         description: 学员创建成功
    */
-  app.post('/api/students', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
-    const { name, age, level, parentName, parentPhone, avatar, remainingHours } = req.body;
+ app.post('/api/students', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+   const { name, age, level, parentName, parentPhone, avatar, remainingHours, userId } = req.body;
     if (!name || !parentName || !parentPhone) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+   if (userId) {
+     const parentUser = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId) as { id: string; role: string } | undefined;
+     if (!parentUser || parentUser.role !== 'parent') {
+       return res.status(400).json({ error: 'Invalid parent userId' });
+     }
+   }
     const id = uuidv4();
     const stmt = db.prepare(`
-      INSERT INTO students (id, name, age, level, parentName, parentPhone, avatar, remainingHours)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     INSERT INTO students (id, userId, name, age, level, parentName, parentPhone, avatar, remainingHours)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(id, name, age || 8, level || 'Beginner', parentName, parentPhone, avatar || `https://picsum.photos/seed/${id}/100/100`, remainingHours || 0);
-    res.status(201).json({ id, ...req.body });
+   stmt.run(id, userId || null, name, age || 8, level || 'Beginner', parentName, parentPhone, avatar || `https://picsum.photos/seed/${id}/100/100`, remainingHours || 0);
+   res.status(201).json({ id, userId: userId || null, ...req.body });
   });
 
-  app.patch('/api/students/:id', requireAuth, (req: AuthRequest, res) => {
+  app.patch('/api/students/:id', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const { id } = req.params;
+    if (!canAccessStudent(req, id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const body = { ...req.body };
     
     if (body.tags && Array.isArray(body.tags)) {
@@ -820,8 +935,11 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.post('/api/students/:id/hours-change', requireAuth, (req: AuthRequest, res) => {
+  app.post('/api/students/:id/hours-change', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const { id } = req.params;
+    if (!canAccessStudent(req, id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const { changeAmount, reason } = req.body;
     const operatorId = req.user?.userId || '';
     
@@ -853,6 +971,9 @@ async function startServer() {
 
   app.get('/api/students/:id/hours-history', requireAuth, (req: AuthRequest, res) => {
     const { id } = req.params;
+    if (!canAccessStudent(req, id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const history = db.prepare('SELECT * FROM hours_change_records WHERE studentId = ? ORDER BY createdAt DESC').all(id);
     res.json(history);
   });
@@ -880,41 +1001,179 @@ async function startServer() {
 
   // Teachers
   app.get('/api/teachers', requireAuth, (req: AuthRequest, res) => {
-    const teachers = db.prepare('SELECT * FROM teachers').all();
+    const teachers = db.prepare('SELECT t.*, u.username FROM teachers t LEFT JOIN users u ON t.userId = u.id').all();
     res.json(teachers);
   });
 
   app.get('/api/teachers/:id', requireAuth, (req: AuthRequest, res) => {
-    const teacher = db.prepare('SELECT * FROM teachers WHERE id = ?').get(req.params.id);
+    const teacher = db.prepare('SELECT t.*, u.username FROM teachers t LEFT JOIN users u ON t.userId = u.id WHERE t.id = ?').get(req.params.id);
     if (!teacher) {
       return res.status(404).json({ error: 'Teacher not found' });
     }
     res.json(teacher);
   });
 
-  app.post('/api/teachers', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
-    const { name, phone, email, specialization, avatar, status } = req.body;
+ app.post('/api/teachers', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    const { name, phone, email, specialization, avatar, status, campusId, userId, username, password } = req.body;
+    const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+    
     if (!name) {
       return res.status(400).json({ error: 'Name is required' });
     }
-    const id = uuidv4();
-    const stmt = db.prepare(`
-      INSERT INTO teachers (id, name, phone, email, specialization, avatar, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(id, name, phone, email, specialization, avatar || `https://picsum.photos/seed/${id}/100/100`, status || 'active');
-    res.status(201).json({ id, ...req.body });
+    if (!normalizedUsername && password) {
+      return res.status(400).json({ error: 'Username is required when password is provided' });
+    }
+    if (userId && (username || password)) {
+      return res.status(400).json({ error: 'userId and username/password cannot be used together' });
+    }
+
+    try {
+      let finalUserId = userId || null;
+      const teacherId = uuidv4();
+      let hashedPassword = null;
+
+      if (!finalUserId && normalizedUsername) {
+        if (!password) {
+          return res.status(400).json({ error: 'Password is required when username is provided' });
+        }
+        hashedPassword = await bcrypt.hash(password, 10);
+      }
+
+      const executeTransaction = db.transaction(() => {
+        if (!finalUserId && normalizedUsername) {
+          const existingUser = db.prepare('SELECT id FROM users WHERE username = ?').get(normalizedUsername) as { id: string } | undefined;
+          if (existingUser) {
+            throw new Error('Username already exists');
+          }
+          const newUserId = uuidv4();
+          db.prepare(`
+            INSERT INTO users (id, username, password, role, name, email, phone, permissions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(newUserId, normalizedUsername, hashedPassword, 'teacher', name, email || null, phone || null, JSON.stringify([]));
+          finalUserId = newUserId;
+        } else if (finalUserId) {
+          const teacherUser = db.prepare('SELECT id, role FROM users WHERE id = ?').get(finalUserId) as { id: string; role: string } | undefined;
+          if (!teacherUser || teacherUser.role !== 'teacher') {
+            throw new Error('Invalid teacher userId');
+          }
+        }
+
+        const stmt = db.prepare(`
+          INSERT INTO teachers (id, userId, name, phone, email, specialization, avatar, status, campusId)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        stmt.run(teacherId, finalUserId, name, phone, email, specialization, avatar || `https://picsum.photos/seed/${teacherId}/100/100`, status || 'active', campusId || null);
+        
+        return teacherId;
+      });
+
+      const id = executeTransaction();
+      const created = db.prepare('SELECT t.*, u.username FROM teachers t LEFT JOIN users u ON t.userId = u.id WHERE t.id = ?').get(id);
+      res.status(201).json(created);
+    } catch (error: any) {
+      console.error('Error creating teacher:', error);
+      res.status(error.message === 'Username already exists' ? 400 : 500).json({ error: error.message || 'Internal server error' });
+    }
   });
 
-  app.patch('/api/teachers/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+  app.patch('/api/teachers/:id', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
     const { id } = req.params;
     const { updates, values } = validateFields(req.body, ALLOWED_TEACHER_FIELDS);
+    const normalizedUsername = typeof req.body.username === 'string' ? req.body.username.trim() : null;
     
-    if (updates.length > 0) {
-      values.push(id);
-      db.prepare(`UPDATE teachers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    try {
+      let hashedPassword = null;
+      if (req.body.password) {
+        hashedPassword = await bcrypt.hash(req.body.password, 10);
+      }
+
+      const executeTransaction = db.transaction(() => {
+        // Fetch current teacher
+        const teacher = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id) as any;
+        if (!teacher) {
+          throw new Error('Teacher not found');
+        }
+        
+        // 1. Update teacher fields
+        if (updates.length > 0) {
+          const updateValues = [...values, id];
+          db.prepare(`UPDATE teachers SET ${updates.join(', ')} WHERE id = ?`).run(...updateValues);
+        }
+
+        // 2. Handle Account Binding
+        if (normalizedUsername !== null) {
+          if (normalizedUsername === '') {
+            // Unbind account
+            db.prepare('UPDATE teachers SET userId = NULL WHERE id = ?').run(id);
+          } else {
+            // Check if username belongs to someone else
+            const existingUser = db.prepare('SELECT id, role FROM users WHERE username = ?').get(normalizedUsername) as { id: string, role: string } | undefined;
+            
+            let targetUserId: string;
+            
+            if (existingUser) {
+              // Username exists
+              if (existingUser.role !== 'teacher') {
+                throw new Error('Username already exists and is not a teacher account');
+              }
+              targetUserId = existingUser.id;
+            } else {
+              // Create new user
+              targetUserId = uuidv4();
+              if (!hashedPassword) {
+                throw new Error('Password is required when creating a new account');
+              }
+              db.prepare(`
+                INSERT INTO users (id, username, password, role, name, email, phone, permissions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(targetUserId, normalizedUsername, hashedPassword, 'teacher', req.body.name || teacher.name, req.body.email || teacher.email || null, req.body.phone || teacher.phone || null, JSON.stringify([]));
+            }
+            
+            // Bind the user to the teacher
+            db.prepare('UPDATE teachers SET userId = ? WHERE id = ?').run(targetUserId, id);
+            
+            // Update password if provided
+            if (hashedPassword) {
+              db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedPassword, targetUserId);
+            }
+            
+            // Sync user details
+            const currentTeacher = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id) as any;
+            db.prepare('UPDATE users SET name = ?, phone = ?, email = ? WHERE id = ?').run(
+              currentTeacher.name,
+              currentTeacher.phone || null,
+              currentTeacher.email || null,
+              targetUserId
+            );
+          }
+        } else if (teacher.userId) {
+          // Username not provided in body, but teacher is already bound. 
+          // Sync name/phone/email if they changed.
+          const currentTeacher = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id) as any;
+          db.prepare('UPDATE users SET name = ?, phone = ?, email = ? WHERE id = ?').run(
+            currentTeacher.name,
+            currentTeacher.phone || null,
+            currentTeacher.email || null,
+            teacher.userId
+          );
+          
+          if (hashedPassword) {
+            db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedPassword, teacher.userId);
+          }
+        }
+
+        return id;
+      });
+
+      executeTransaction();
+      const updated = db.prepare('SELECT t.*, u.username FROM teachers t LEFT JOIN users u ON t.userId = u.id WHERE t.id = ?').get(id);
+      res.json(updated);
+    } catch (error: any) {
+      console.error('Error updating teacher:', error);
+      res.status(error.message === 'Username already exists' || error.message.includes('exists') ? 400 : 
+                 error.message === 'Teacher not found' ? 404 : 500)
+         .json({ error: error.message || 'Internal server error' });
     }
-    res.json({ success: true });
   });
 
   app.delete('/api/teachers/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
@@ -933,14 +1192,30 @@ async function startServer() {
   // Attendance
   app.get('/api/attendance/:studentId', requireAuth, (req: AuthRequest, res) => {
     const { studentId } = req.params;
+    if (!canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const attendance = db.prepare('SELECT * FROM attendance WHERE studentId = ?').all(studentId);
     res.json(attendance);
   });
 
-  app.post('/api/attendance', requireAuth, (req: AuthRequest, res) => {
+  app.post('/api/attendance', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const { courseId, studentId, status, date } = req.body;
     if (!courseId || !studentId || !status || !date) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (isTeacher(req)) {
+      const course = db.prepare('SELECT teacherId FROM courses WHERE id = ?').get(courseId) as { teacherId: string } | undefined;
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found' });
+      }
+      const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+      if (!allowedTeacherIds.has(course.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
     }
     const id = uuidv4();
     const stmt = db.prepare(`
@@ -958,7 +1233,22 @@ async function startServer() {
 
   // Courses
   app.get('/api/courses', requireAuth, (req: AuthRequest, res) => {
-    const courses = db.prepare('SELECT * FROM courses').all();
+    let query = 'SELECT * FROM courses';
+    const params: any[] = [];
+    if (req.user?.role === 'parent') {
+      query += ' WHERE studentId IN (SELECT id FROM students WHERE userId = ?)';
+      params.push(req.user.userId);
+    } else if (req.user?.role === 'teacher') {
+      const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+      const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+      if (allowedTeacherIds.length > 0) {
+        query += ` WHERE teacherId IN (${allowedTeacherIds.map(() => '?').join(', ')})`;
+        params.push(...allowedTeacherIds);
+      } else {
+        query += ' WHERE 1 = 0';
+      }
+    }
+    const courses = db.prepare(query).all(...params);
     res.json(courses);
   });
 
@@ -967,56 +1257,134 @@ async function startServer() {
     if (!course) {
       return res.status(404).json({ error: 'Course not found' });
     }
+    if (req.user?.role === 'parent') {
+      const student = db.prepare('SELECT userId FROM students WHERE id = ?').get((course as any).studentId) as { userId: string | null } | undefined;
+      if (!student || student.userId !== req.user.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+    if (req.user?.role === 'teacher') {
+      const allowedTeacherIds = new Set([req.user.userId, ...teacherEntityIdsByUserId(req.user.userId)]);
+      if (!allowedTeacherIds.has((course as any).teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     res.json(course);
   });
 
-  app.post('/api/courses', requireAuth, (req: AuthRequest, res) => {
-    const { title, date, startTime, endTime, teacherId, teacherName, studentId, studentName, room } = req.body;
+  app.post('/api/courses', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { title, date, startTime, endTime, teacherId, teacherName, studentId, studentName, room, campusId } = req.body;
     if (!title || !date || !startTime || !endTime) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     const id = uuidv4();
+    let finalTeacherId = teacherId;
+    let finalTeacherName = teacherName;
+    if (isTeacher(req)) {
+      const teacher = primaryTeacherByUserId(req.user!.userId);
+      finalTeacherId = teacher?.id || req.user!.userId;
+      finalTeacherName = teacher?.name || teacherName;
+    } else if (!finalTeacherId) {
+      return res.status(400).json({ error: 'teacherId is required' });
+    }
+    if (studentId && !canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const stmt = db.prepare(`
-      INSERT INTO courses (id, title, date, startTime, endTime, teacherId, teacherName, studentId, studentName, room, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+      INSERT INTO courses (id, title, date, startTime, endTime, teacherId, teacherName, studentId, studentName, room, status, campusId)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
     `);
-    stmt.run(id, title, date, startTime, endTime, teacherId || 't1', teacherName, studentId, studentName, room);
-    res.status(201).json({ id, ...req.body, status: 'scheduled' });
+    stmt.run(id, title, date, startTime, endTime, finalTeacherId, finalTeacherName, studentId, studentName, room, campusId || null);
+    res.status(201).json({ id, ...req.body, teacherId: finalTeacherId, teacherName: finalTeacherName, status: 'scheduled', campusId: campusId || null });
   });
 
-  app.post('/api/courses/batch', requireAuth, (req: AuthRequest, res) => {
+  app.post('/api/courses/batch', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const courses = req.body;
     if (!Array.isArray(courses) || courses.length === 0) {
       return res.status(400).json({ error: 'Invalid courses data' });
     }
     
     const stmt = db.prepare(`
-      INSERT INTO courses (id, title, date, startTime, endTime, teacherId, teacherName, studentId, studentName, room, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+      INSERT INTO courses (id, title, date, startTime, endTime, teacherId, teacherName, studentId, studentName, room, status, campusId)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
     `);
     
     const transaction = db.transaction((courses) => {
+      const teacher = isTeacher(req) ? primaryTeacherByUserId(req!.user!.userId) : null;
       for (const course of courses) {
-        stmt.run(uuidv4(), course.title, course.date, course.startTime, course.endTime, course.teacherId || 't1', course.teacherName, course.studentId, course.studentName, course.room);
+        if (course.studentId && !canAccessStudent(req!, course.studentId)) {
+          throw new Error('Forbidden');
+        }
+        const finalTeacherId = isTeacher(req) ? (teacher?.id || req!.user!.userId) : course.teacherId;
+        if (!finalTeacherId) {
+          throw new Error('Missing teacherId');
+        }
+        stmt.run(
+          uuidv4(),
+          course.title,
+          course.date,
+          course.startTime,
+          course.endTime,
+          finalTeacherId,
+          isTeacher(req) ? (teacher?.name || course.teacherName) : course.teacherName,
+          course.studentId,
+          course.studentName,
+          course.room,
+          course.campusId || null
+        );
       }
     });
     
-    transaction(courses);
+    try {
+      transaction(courses);
+    } catch {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     res.status(201).json({ success: true });
   });
 
-  app.put('/api/courses/:id', requireAuth, (req: AuthRequest, res) => {
+  app.put('/api/courses/:id', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const { id } = req.params;
-    const { title, date, startTime, endTime, teacherId, teacherName, room } = req.body;
+    const { title, date, startTime, endTime, teacherId, teacherName, room, campusId } = req.body;
+    const existing = db.prepare('SELECT teacherId, studentId FROM courses WHERE id = ?').get(id) as { teacherId: string; studentId: string } | undefined;
+    if (!existing) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    if (isTeacher(req)) {
+      const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+      if (!allowedTeacherIds.has(existing.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     db.prepare(`
-      UPDATE courses SET title = ?, date = ?, startTime = ?, endTime = ?, teacherId = ?, teacherName = ?, room = ?
+      UPDATE courses SET title = ?, date = ?, startTime = ?, endTime = ?, teacherId = ?, teacherName = ?, room = ?, campusId = ?
       WHERE id = ?
-    `).run(title, date, startTime, endTime, teacherId, teacherName, room, id);
+    `).run(
+      title,
+      date,
+      startTime,
+      endTime,
+      isTeacher(req) ? (primaryTeacherByUserId(req.user!.userId)?.id || req.user!.userId) : teacherId,
+      isTeacher(req) ? (primaryTeacherByUserId(req.user!.userId)?.name || teacherName) : teacherName,
+      room,
+      campusId || null,
+      id
+    );
     res.json({ success: true });
   });
 
-  app.delete('/api/courses/:id', requireAuth, (req: AuthRequest, res) => {
+  app.delete('/api/courses/:id', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const { id } = req.params;
+    if (isTeacher(req)) {
+      const course = db.prepare('SELECT teacherId FROM courses WHERE id = ?').get(id) as { teacherId: string } | undefined;
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found' });
+      }
+      const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+      if (!allowedTeacherIds.has(course.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     
     const deleteTransaction = db.transaction(() => {
       db.prepare('DELETE FROM attendance WHERE courseId = ?').run(id);
@@ -1028,8 +1396,18 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.patch('/api/courses/:id', requireAuth, (req: AuthRequest, res) => {
+  app.patch('/api/courses/:id', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
     const { id } = req.params;
+    if (isTeacher(req)) {
+      const course = db.prepare('SELECT teacherId FROM courses WHERE id = ?').get(id) as { teacherId: string } | undefined;
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found' });
+      }
+      const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+      if (!allowedTeacherIds.has(course.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     const { status } = req.body;
     if (status) {
       db.prepare('UPDATE courses SET status = ? WHERE id = ?').run(status, id);
@@ -1039,10 +1417,24 @@ async function startServer() {
 
   // Feedbacks
   app.get('/api/feedbacks', requireAuth, (req: AuthRequest, res) => {
-    const { studentId, teacherId } = req.query;
+    const { studentId, teacherId } = req.query as { studentId?: string; teacherId?: string };
     let query = 'SELECT * FROM feedbacks';
     const conditions: string[] = [];
     const params: any[] = [];
+
+    if (req.user?.role === 'parent') {
+      conditions.push('studentId IN (SELECT id FROM students WHERE userId = ?)');
+      params.push(req.user.userId);
+    } else if (req.user?.role === 'teacher') {
+      const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+      const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+      if (allowedTeacherIds.length > 0) {
+        conditions.push(`teacherId IN (${allowedTeacherIds.map(() => '?').join(', ')})`);
+        params.push(...allowedTeacherIds);
+      } else {
+        conditions.push('1 = 0');
+      }
+    }
     
     if (studentId) {
       conditions.push('studentId = ?');
@@ -1062,10 +1454,28 @@ async function startServer() {
     res.json(feedbacks);
   });
 
-  app.post('/api/feedbacks', requireAuth, (req: AuthRequest, res) => {
+  app.post('/api/feedbacks', requireAuth, requireRole('teacher', 'admin'), (req: AuthRequest, res) => {
     const { courseId, studentId, teacherId, content, homework, rating } = req.body;
     if (!courseId || !studentId || !teacherId || !content) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!isAdmin(req)) {
+      if (teacherId !== req.user?.userId) {
+        const teacherIds = teacherEntityIdsByUserId(req.user!.userId);
+        if (!teacherIds.includes(teacherId)) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
+      if (courseId !== 'general') {
+        const course = db.prepare('SELECT studentId, teacherId FROM courses WHERE id = ?').get(courseId) as { studentId: string; teacherId: string } | undefined;
+        if (!course) {
+          return res.status(404).json({ error: 'Course not found' });
+        }
+        const teacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+        if (course.studentId !== studentId || !teacherIds.has(course.teacherId)) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
     }
     const id = uuidv4();
     const date = new Date().toISOString().split('T')[0];
@@ -1079,7 +1489,40 @@ async function startServer() {
 
   // Payments
   app.get('/api/payments', requireAuth, (req: AuthRequest, res) => {
-    const { studentId } = req.query;
+    const { studentId } = req.query as { studentId?: string };
+    if (!isAdmin(req) && studentId && !canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (req.user?.role === 'parent') {
+      if (!studentId) {
+        const payments = db.prepare(`
+          SELECT p.* FROM payments p
+          JOIN students s ON s.id = p.studentId
+          WHERE s.userId = ?
+          ORDER BY p.date DESC
+        `).all(req.user.userId);
+        return res.json(payments);
+      }
+      if (!canAccessStudent(req, studentId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+    if (req.user?.role === 'teacher' && !studentId) {
+      const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+      const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+      const idCondition = allowedTeacherIds.length > 0
+        ? `c.teacherId IN (${allowedTeacherIds.map(() => '?').join(', ')})`
+        : '0=1';
+      const query = `
+        SELECT DISTINCT p.* FROM payments p
+        JOIN courses c ON c.studentId = p.studentId
+        WHERE ${idCondition}
+        ORDER BY p.date DESC
+      `;
+      const params: any[] = [...allowedTeacherIds];
+      const payments = db.prepare(query).all(...params);
+      return res.json(payments);
+    }
     let query = 'SELECT * FROM payments';
     const params: any[] = [];
     
@@ -1119,7 +1562,13 @@ async function startServer() {
 
   // Messages
   app.get('/api/messages', requireAuth, (req: AuthRequest, res) => {
-    const { userId, role } = req.query;
+    const { userId, role } = req.query as { userId?: string; role?: string };
+    if (!userId || !role) {
+      return res.status(400).json({ error: 'Missing required query params' });
+    }
+    if (!isAdmin(req) && userId !== req.user?.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     let query = 'SELECT * FROM messages WHERE (receiverId = ? AND receiverRole = ?) OR (senderId = ? AND senderRole = ?)';
     const messages = db.prepare(query).all(userId, role, userId, role);
     res.json(messages);
@@ -1129,6 +1578,16 @@ async function startServer() {
     const { senderId, senderRole, receiverId, receiverRole, content } = req.body;
     if (!senderId || !receiverId || !content) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!isAdmin(req) && senderId !== req.user?.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (!isAdmin(req) && senderRole !== req.user?.role) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const receiverUser = db.prepare('SELECT id, role FROM users WHERE id = ?').get(receiverId) as { id: string; role: string } | undefined;
+    if (!receiverUser || receiverUser.role !== receiverRole) {
+      return res.status(400).json({ error: 'Invalid receiver' });
     }
     const id = uuidv4();
     const timestamp = new Date().toISOString();
@@ -1141,13 +1600,38 @@ async function startServer() {
   });
 
   app.patch('/api/messages/:id/read', requireAuth, (req: AuthRequest, res) => {
-    db.prepare('UPDATE messages SET read = 1 WHERE id = ?').run(req.params.id);
-    res.json({ success: true });
+    if (isAdmin(req)) {
+      const result = db.prepare('UPDATE messages SET read = 1 WHERE id = ?').run(req.params.id);
+      if (result.changes === 0) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+      const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.id);
+      return res.json(updated);
+    }
+    const result = db.prepare('UPDATE messages SET read = 1 WHERE id = ? AND receiverId = ?').run(req.params.id, req.user!.userId);
+    if (result.changes === 0) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.id);
+    res.json(updated);
   });
 
   // Notifications
   app.get('/api/notifications/:userId', requireAuth, (req: AuthRequest, res) => {
+    if (!isAdmin(req) && req.params.userId !== req.user?.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const notifications = db.prepare('SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC').all(req.params.userId);
+    res.json(notifications);
+  });
+
+  app.get('/api/notifications', requireAuth, (req: AuthRequest, res) => {
+    const { userId } = req.query as { userId?: string };
+    const targetUserId = userId || req.user!.userId;
+    if (!isAdmin(req) && targetUserId !== req.user?.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const notifications = db.prepare('SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC').all(targetUserId);
     res.json(notifications);
   });
 
@@ -1155,6 +1639,9 @@ async function startServer() {
     const { userId, title, content } = req.body;
     if (!userId || !title || !content) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!isAdmin(req) && userId !== req.user?.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
     const id = uuidv4();
     const timestamp = new Date().toISOString();
@@ -1167,13 +1654,41 @@ async function startServer() {
   });
 
   app.patch('/api/notifications/:id/read', requireAuth, (req: AuthRequest, res) => {
-    db.prepare('UPDATE notifications SET read = 1 WHERE id = ?').run(req.params.id);
-    res.json({ success: true });
+    if (isAdmin(req)) {
+      const result = db.prepare('UPDATE notifications SET read = 1 WHERE id = ?').run(req.params.id);
+      if (result.changes === 0) {
+        return res.status(404).json({ error: 'Notification not found' });
+      }
+      const updated = db.prepare('SELECT * FROM notifications WHERE id = ?').get(req.params.id);
+      return res.json(updated);
+    }
+    const result = db.prepare('UPDATE notifications SET read = 1 WHERE id = ? AND userId = ?').run(req.params.id, req.user!.userId);
+    if (result.changes === 0) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const updated = db.prepare('SELECT * FROM notifications WHERE id = ?').get(req.params.id);
+    res.json(updated);
   });
 
   // Leave Requests
   app.get('/api/leave-requests', requireAuth, (req: AuthRequest, res) => {
-    const leaveRequests = db.prepare('SELECT * FROM leave_requests ORDER BY requestDate DESC').all();
+    let query = 'SELECT * FROM leave_requests';
+    const params: any[] = [];
+    if (req.user?.role === 'parent') {
+      query += ' WHERE studentId IN (SELECT id FROM students WHERE userId = ?)';
+      params.push(req.user.userId);
+    } else if (req.user?.role === 'teacher') {
+      const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+      const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+      if (allowedTeacherIds.length > 0) {
+        query += ` WHERE courseId IN (SELECT id FROM courses WHERE teacherId IN (${allowedTeacherIds.map(() => '?').join(', ')}))`;
+        params.push(...allowedTeacherIds);
+      } else {
+        query += ' WHERE 1 = 0';
+      }
+    }
+    query += ' ORDER BY requestDate DESC';
+    const leaveRequests = db.prepare(query).all(...params);
     res.json(leaveRequests);
   });
 
@@ -1181,6 +1696,19 @@ async function startServer() {
     const { courseId, studentId, studentName, type, reason, preferredDate, preferredTime } = req.body;
     if (!courseId || !studentId || !type || !reason) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (isTeacher(req)) {
+      const course = db.prepare('SELECT teacherId, studentId FROM courses WHERE id = ?').get(courseId) as { teacherId: string; studentId: string } | undefined;
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found' });
+      }
+      const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+      if (course.studentId !== studentId || !allowedTeacherIds.has(course.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
     }
     const id = uuidv4();
     const requestDate = new Date().toISOString();
@@ -1200,13 +1728,37 @@ async function startServer() {
       SET status = ?, processedBy = ?, processedDate = ?, response = ?
       WHERE id = ?
     `);
-    stmt.run(status, req.user?.userId, processedDate, response || null, req.params.id);
-    res.json({ success: true });
+    const result = stmt.run(status, req.user?.userId, processedDate, response || null, req.params.id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+    const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(req.params.id);
+    res.json(updated);
   });
 
   // Homeworks
   app.get('/api/homeworks', requireAuth, (req: AuthRequest, res) => {
-    const homeworks = db.prepare('SELECT * FROM homeworks ORDER BY createdAt DESC').all();
+    let query = 'SELECT * FROM homeworks';
+    const conditions: string[] = [];
+    const params: any[] = [];
+    if (req.user?.role === 'parent') {
+      conditions.push('studentId IN (SELECT id FROM students WHERE userId = ?)');
+      params.push(req.user.userId);
+    } else if (req.user?.role === 'teacher') {
+      const teacherIds = teacherEntityIdsByUserId(req.user.userId);
+      const allowedTeacherIds = Array.from(new Set([req.user.userId, ...teacherIds]));
+      if (allowedTeacherIds.length > 0) {
+        conditions.push(`teacherId IN (${allowedTeacherIds.map(() => '?').join(', ')})`);
+        params.push(...allowedTeacherIds);
+      } else {
+        conditions.push('1 = 0');
+      }
+    }
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+    query += ' ORDER BY createdAt DESC';
+    const homeworks = db.prepare(query).all(...params);
     res.json(homeworks);
   });
 
@@ -1215,42 +1767,85 @@ async function startServer() {
     if (!studentId || !title) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+    if (!canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const id = uuidv4();
     const createdAt = new Date().toISOString();
-    const teacher = db.prepare('SELECT name FROM teachers WHERE userId = ?').get(req.user?.userId) as { name: string } | undefined;
+    const teacher = db.prepare('SELECT id, name FROM teachers WHERE userId = ?').get(req.user?.userId) as { id: string; name: string } | undefined;
+    const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+    if (courseId) {
+      const course = db.prepare('SELECT teacherId, studentId FROM courses WHERE id = ?').get(courseId) as { teacherId: string; studentId: string } | undefined;
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found' });
+      }
+      if (course.studentId !== studentId || !allowedTeacherIds.has(course.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     const stmt = db.prepare(`
       INSERT INTO homeworks (id, courseId, studentId, studentName, teacherId, teacherName, title, description, dueDate, status, createdAt)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
     `);
-    stmt.run(id, courseId || null, studentId, studentName, req.user?.userId, teacher?.name || '', title, description || null, dueDate || null, createdAt);
-    res.status(201).json({ id, ...req.body, status: 'pending', createdAt });
+   stmt.run(id, courseId || null, studentId, studentName, teacher?.id || req.user?.userId, teacher?.name || '', title, description || null, dueDate || null, createdAt);
+   res.status(201).json({ id, ...req.body, teacherId: teacher?.id || req.user?.userId, teacherName: teacher?.name || '', status: 'pending', createdAt });
   });
 
   app.patch('/api/homeworks/:id/submit', requireAuth, (req: AuthRequest, res) => {
+    const homework = db.prepare('SELECT studentId, teacherId FROM homeworks WHERE id = ?').get(req.params.id) as { studentId: string; teacherId: string } | undefined;
+    if (!homework) {
+      return res.status(404).json({ error: 'Homework not found' });
+    }
+    if (!canAccessStudent(req, homework.studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (isTeacher(req)) {
+      const allowedTeacherIds = new Set([req.user!.userId, ...teacherEntityIdsByUserId(req.user!.userId)]);
+      if (!allowedTeacherIds.has(homework.teacherId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     const { submittedContent, submittedAt, status } = req.body;
     const stmt = db.prepare(`
       UPDATE homeworks SET submittedContent = ?, submittedAt = ?, status = ? WHERE id = ?
     `);
     stmt.run(submittedContent, submittedAt, status, req.params.id);
-    res.json({ success: true });
+    const updated = db.prepare('SELECT * FROM homeworks WHERE id = ?').get(req.params.id);
+    res.json(updated);
   });
 
   app.patch('/api/homeworks/:id/review', requireAuth, requireRole('teacher'), (req: AuthRequest, res) => {
+    const homework = db.prepare('SELECT teacherId FROM homeworks WHERE id = ?').get(req.params.id) as { teacherId: string } | undefined;
+    if (!homework) {
+      return res.status(404).json({ error: 'Homework not found' });
+    }
+    const teacherIds = teacherEntityIdsByUserId(req.user!.userId);
+    const allowedTeacherIds = new Set([req.user!.userId, ...teacherIds]);
+    if (!allowedTeacherIds.has(homework.teacherId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const { reviewComment, rating, reviewedAt, status } = req.body;
     const stmt = db.prepare(`
       UPDATE homeworks SET reviewComment = ?, rating = ?, reviewedAt = ?, status = ? WHERE id = ?
     `);
     stmt.run(reviewComment || null, rating || null, reviewedAt, status, req.params.id);
-    res.json({ success: true });
+    const updated = db.prepare('SELECT * FROM homeworks WHERE id = ?').get(req.params.id);
+    res.json(updated);
   });
 
   // Student Progress
   app.get('/api/student-progress/:studentId', requireAuth, (req: AuthRequest, res) => {
+    if (!canAccessStudent(req, req.params.studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const progress = db.prepare('SELECT * FROM student_progress WHERE studentId = ?').all(req.params.studentId);
     res.json(progress);
   });
 
   app.get('/api/learning-goals/:studentId', requireAuth, (req: AuthRequest, res) => {
+    if (!canAccessStudent(req, req.params.studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const goals = db.prepare('SELECT * FROM learning_goals WHERE studentId = ? ORDER BY createdAt DESC').all(req.params.studentId);
     res.json(goals);
   });
@@ -1259,6 +1854,9 @@ async function startServer() {
     const { studentId, title, description, targetDate } = req.body;
     if (!studentId || !title) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
     const id = uuidv4();
     const createdAt = new Date().toISOString();
@@ -1272,13 +1870,28 @@ async function startServer() {
 
   app.patch('/api/learning-goals/:id', requireAuth, (req: AuthRequest, res) => {
     const { status } = req.body;
+    const goal = db.prepare('SELECT studentId FROM learning_goals WHERE id = ?').get(req.params.id) as { studentId: string } | undefined;
+    if (!goal) {
+      return res.status(404).json({ error: 'Learning goal not found' });
+    }
+    if (!canAccessStudent(req, goal.studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     db.prepare('UPDATE learning_goals SET status = ? WHERE id = ?').run(status, req.params.id);
-    res.json({ success: true });
+    const updated = db.prepare('SELECT * FROM learning_goals WHERE id = ?').get(req.params.id);
+    res.json(updated);
   });
 
   app.get('/api/practice-records/:studentId', requireAuth, (req: AuthRequest, res) => {
-    const records = db.prepare('SELECT * FROM practice_records WHERE studentId = ? ORDER BY date DESC').all(req.params.studentId);
-    res.json(records);
+    if (!canAccessStudent(req, req.params.studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const records = db.prepare('SELECT * FROM practice_records WHERE studentId = ? ORDER BY date DESC').all(req.params.studentId) as Array<any>;
+    const parsed = records.map((record) => ({
+      ...record,
+      pieces: record.pieces ? JSON.parse(record.pieces) : [],
+    }));
+    res.json(parsed);
   });
 
   app.post('/api/practice-records', requireAuth, (req: AuthRequest, res) => {
@@ -1286,13 +1899,16 @@ async function startServer() {
     if (!studentId || !date) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+    if (!canAccessStudent(req, studentId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const id = uuidv4();
     const stmt = db.prepare(`
       INSERT INTO practice_records (id, studentId, date, duration, pieces, notes)
       VALUES (?, ?, ?, ?, ?, ?)
     `);
     stmt.run(id, studentId, date, duration || 0, JSON.stringify(pieces || []), notes || null);
-    res.status(201).json({ id, ...req.body });
+    res.status(201).json({ id, ...req.body, pieces: pieces || [] });
   });
 
   // Materials
@@ -1301,8 +1917,8 @@ async function startServer() {
     res.json(materials);
   });
 
-  app.post('/api/materials', requireAuth, (req: AuthRequest, res) => {
-    const { title, type, category, level, description, filename, size, uploadedBy } = req.body;
+  app.post('/api/materials', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { title, type, category, level, description, filename, size } = req.body;
     if (!title || !type || !category) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -1312,8 +1928,8 @@ async function startServer() {
       INSERT INTO materials (id, title, type, category, level, description, filename, size, uploadDate, uploadedBy)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(id, title, type, category, level || '', description || '', filename || '', size || '', uploadDate, uploadedBy || '');
-    res.status(201).json({ id, ...req.body, uploadDate });
+    stmt.run(id, title, type, category, level || '', description || '', filename || '', size || '', uploadDate, req.user?.userId || '');
+    res.status(201).json({ id, ...req.body, uploadedBy: req.user?.userId || '', uploadDate });
   });
 
   app.delete('/api/materials/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
@@ -1326,6 +1942,414 @@ async function startServer() {
     }
     db.prepare('DELETE FROM materials WHERE id = ?').run(req.params.id);
     res.json({ success: true });
+  });
+
+  app.get('/api/leads', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const leads = (req.user?.role === 'teacher'
+      ? db.prepare('SELECT * FROM leads WHERE assignedTo = ? ORDER BY createdAt DESC').all(req.user.userId)
+      : db.prepare('SELECT * FROM leads ORDER BY createdAt DESC').all()) as any[];
+    const counts = db.prepare('SELECT leadId, COUNT(*) as count FROM follow_ups GROUP BY leadId').all() as any[];
+    const countMap = new Map<string, number>(counts.map((r) => [r.leadId, r.count]));
+    res.json(
+      leads.map((l) => ({
+        ...l,
+        interests: l.interests ? JSON.parse(l.interests) : [],
+        tags: l.tags ? JSON.parse(l.tags) : [],
+        followUpCount: countMap.get(l.id) || 0,
+      }))
+    );
+  });
+
+  app.post('/api/leads', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { name, phone, source } = req.body;
+    if (!name || !phone || !source) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    const interests = Array.isArray(req.body.interests) ? JSON.stringify(req.body.interests) : null;
+    const tags = Array.isArray(req.body.tags) ? JSON.stringify(req.body.tags) : null;
+
+    const currentUser = db.prepare('SELECT name FROM users WHERE id = ?').get(req.user!.userId) as { name: string } | undefined;
+    const assignedTo = req.user?.role === 'teacher' ? req.user.userId : (req.body.assignedTo || null);
+    const assignedName = req.user?.role === 'teacher' ? (currentUser?.name || null) : (req.body.assignedName || null);
+
+    db.prepare(`
+      INSERT INTO leads (
+        id, name, phone, email, address, age, source, status, notes, interests, tags,
+        assignedTo, assignedName, studentId, nextFollowUp, trialDate, lastContacted, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      name,
+      phone,
+      req.body.email || null,
+      req.body.address || null,
+      req.body.age ?? null,
+      source,
+      req.body.status || 'new',
+      req.body.notes || '',
+      interests,
+      tags,
+      assignedTo,
+      assignedName,
+      req.body.studentId || null,
+      req.body.nextFollowUp || null,
+      req.body.trialDate || null,
+      req.body.lastContacted || null,
+      now,
+      now
+    );
+
+    const lead = db.prepare('SELECT * FROM leads WHERE id = ?').get(id) as any;
+    res.status(201).json({
+      ...lead,
+      interests: lead.interests ? JSON.parse(lead.interests) : [],
+      tags: lead.tags ? JSON.parse(lead.tags) : [],
+      followUpCount: 0,
+    });
+  });
+
+  app.patch('/api/leads/:id', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const lead = db.prepare('SELECT * FROM leads WHERE id = ?').get(req.params.id) as any;
+    if (!lead) return res.status(404).json({ error: 'Not found' });
+    if (req.user?.role === 'teacher' && lead.assignedTo !== req.user.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (!ALLOWED_LEAD_FIELDS.includes(key) || value === undefined) continue;
+      if (key === 'tags' || key === 'interests') {
+        updates.push(`${key} = ?`);
+        values.push(Array.isArray(value) ? JSON.stringify(value) : null);
+      } else {
+        updates.push(`${key} = ?`);
+        values.push(value);
+      }
+    }
+
+    if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+
+    updates.push('updatedAt = ?');
+    values.push(new Date().toISOString());
+    values.push(req.params.id);
+
+    db.prepare(`UPDATE leads SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+    const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(req.params.id) as any;
+    const followUpCount = (db.prepare('SELECT COUNT(*) as count FROM follow_ups WHERE leadId = ?').get(req.params.id) as any)?.count || 0;
+    res.json({
+      ...updated,
+      interests: updated.interests ? JSON.parse(updated.interests) : [],
+      tags: updated.tags ? JSON.parse(updated.tags) : [],
+      followUpCount,
+    });
+  });
+
+  app.post('/api/leads/:id/trial', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { trialDate } = req.body;
+    if (!trialDate) return res.status(400).json({ error: 'Missing required fields' });
+
+    const lead = db.prepare('SELECT * FROM leads WHERE id = ?').get(req.params.id) as any;
+    if (!lead) return res.status(404).json({ error: 'Not found' });
+    if (req.user?.role === 'teacher' && lead.assignedTo !== req.user.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    db.prepare('UPDATE leads SET trialDate = ?, status = ?, updatedAt = ? WHERE id = ?').run(trialDate, 'trial', new Date().toISOString(), req.params.id);
+    const updated = db.prepare('SELECT * FROM leads WHERE id = ?').get(req.params.id) as any;
+    const followUpCount = (db.prepare('SELECT COUNT(*) as count FROM follow_ups WHERE leadId = ?').get(req.params.id) as any)?.count || 0;
+    res.json({
+      ...updated,
+      interests: updated.interests ? JSON.parse(updated.interests) : [],
+      tags: updated.tags ? JSON.parse(updated.tags) : [],
+      followUpCount,
+    });
+  });
+
+  app.get('/api/marketing/follow-ups', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { leadId } = req.query as any;
+    if (req.user?.role === 'teacher') {
+      if (leadId) {
+        const ownedLead = db.prepare('SELECT id FROM leads WHERE id = ? AND assignedTo = ?').get(leadId, req.user.userId) as { id: string } | undefined;
+        if (!ownedLead) return res.status(403).json({ error: 'Forbidden' });
+        const rows = db.prepare('SELECT * FROM follow_ups WHERE leadId = ? ORDER BY createdAt DESC').all(leadId);
+        return res.json(rows);
+      }
+      const rows = db.prepare(`
+        SELECT fu.* FROM follow_ups fu
+        JOIN leads l ON l.id = fu.leadId
+        WHERE l.assignedTo = ?
+        ORDER BY fu.createdAt DESC
+      `).all(req.user.userId);
+      return res.json(rows);
+    }
+    const rows = leadId
+      ? db.prepare('SELECT * FROM follow_ups WHERE leadId = ? ORDER BY createdAt DESC').all(leadId)
+      : db.prepare('SELECT * FROM follow_ups ORDER BY createdAt DESC').all();
+    res.json(rows);
+  });
+
+  app.get('/api/leads/:id/follow-ups', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const lead = db.prepare('SELECT id, assignedTo FROM leads WHERE id = ?').get(req.params.id) as any;
+    if (!lead) return res.status(404).json({ error: 'Not found' });
+    if (req.user?.role === 'teacher' && lead.assignedTo !== req.user.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const rows = db.prepare('SELECT * FROM follow_ups WHERE leadId = ? ORDER BY createdAt DESC').all(req.params.id);
+    res.json(rows);
+  });
+
+  app.post('/api/leads/:id/follow-ups', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const lead = db.prepare('SELECT id, assignedTo FROM leads WHERE id = ?').get(req.params.id) as any;
+    if (!lead) return res.status(404).json({ error: 'Not found' });
+    if (req.user?.role === 'teacher' && lead.assignedTo !== req.user.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const { type, content, result, scheduledDate } = req.body;
+    if (!type || !content || !result) return res.status(400).json({ error: 'Missing required fields' });
+
+    const id = uuidv4();
+    const createdAt = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO follow_ups (id, leadId, type, content, result, scheduledDate, createdBy, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, req.params.id, type, content, result, scheduledDate || null, req.user!.userId, createdAt);
+
+    db.prepare('UPDATE leads SET lastContacted = ?, nextFollowUp = ?, updatedAt = ? WHERE id = ?').run(
+      createdAt,
+      scheduledDate || null,
+      createdAt,
+      req.params.id
+    );
+
+    res.status(201).json({ id, leadId: req.params.id, type, content, result, scheduledDate: scheduledDate || null, createdBy: req.user!.userId, createdAt });
+  });
+
+  app.get('/api/marketing/campaigns', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const campaigns = db.prepare('SELECT * FROM marketing_campaigns ORDER BY createdAt DESC').all();
+    res.json(campaigns);
+  });
+
+  app.post('/api/marketing/campaigns', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const { name, type, status, startDate, endDate } = req.body;
+    if (!name || !type || !status || !startDate || !endDate) return res.status(400).json({ error: 'Missing required fields' });
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO marketing_campaigns (
+        id, name, type, status, description, startDate, endDate, targetAudience, budget,
+        conversionGoal, actualConversions, createdBy, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      name,
+      type,
+      status,
+      req.body.description || '',
+      startDate,
+      endDate,
+      req.body.targetAudience || null,
+      req.body.budget ?? null,
+      req.body.conversionGoal ?? null,
+      req.body.actualConversions ?? 0,
+      req.user!.userId,
+      now,
+      now
+    );
+    res.status(201).json(db.prepare('SELECT * FROM marketing_campaigns WHERE id = ?').get(id));
+  });
+
+  app.patch('/api/marketing/campaigns/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const row = db.prepare('SELECT * FROM marketing_campaigns WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Not found' });
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (!ALLOWED_CAMPAIGN_FIELDS.includes(key) || value === undefined) continue;
+      updates.push(`${key} = ?`);
+      values.push(value);
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+    updates.push('updatedAt = ?');
+    values.push(new Date().toISOString());
+    values.push(req.params.id);
+    db.prepare(`UPDATE marketing_campaigns SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    res.json(db.prepare('SELECT * FROM marketing_campaigns WHERE id = ?').get(req.params.id));
+  });
+
+  app.get('/api/marketing/coupons', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const today = new Date().toISOString().split('T')[0];
+    db.prepare(`UPDATE coupons SET status = 'expired' WHERE status = 'active' AND validUntil < ?`).run(today);
+    const coupons = db.prepare('SELECT * FROM coupons ORDER BY createdAt DESC').all() as any[];
+    res.json(
+      coupons.map((c) => ({
+        ...c,
+        applicableCourses: c.applicableCourses ? JSON.parse(c.applicableCourses) : [],
+      }))
+    );
+  });
+
+  app.post('/api/marketing/coupons', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const { code, type, value, status, validFrom, validUntil } = req.body;
+    if (!code || !type || value === undefined || !status || !validFrom || !validUntil) return res.status(400).json({ error: 'Missing required fields' });
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const applicableCourses = Array.isArray(req.body.applicableCourses) ? JSON.stringify(req.body.applicableCourses) : null;
+    db.prepare(`
+      INSERT INTO coupons (
+        id, code, type, value, minPurchase, maxDiscount, status, validFrom, validUntil,
+        usageLimit, usedCount, applicableCourses, campaignId, createdBy, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      code,
+      type,
+      value,
+      req.body.minPurchase ?? null,
+      req.body.maxDiscount ?? null,
+      status,
+      validFrom,
+      validUntil,
+      req.body.usageLimit ?? null,
+      req.body.usedCount ?? 0,
+      applicableCourses,
+      req.body.campaignId || null,
+      req.user!.userId,
+      now
+    );
+    const coupon = db.prepare('SELECT * FROM coupons WHERE id = ?').get(id) as any;
+    res.status(201).json({ ...coupon, applicableCourses: coupon.applicableCourses ? JSON.parse(coupon.applicableCourses) : [] });
+  });
+
+  app.patch('/api/marketing/coupons/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const row = db.prepare('SELECT * FROM coupons WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Not found' });
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (!ALLOWED_COUPON_FIELDS.includes(key) || value === undefined) continue;
+      if (key === 'applicableCourses') {
+        updates.push(`${key} = ?`);
+        values.push(Array.isArray(value) ? JSON.stringify(value) : null);
+      } else {
+        updates.push(`${key} = ?`);
+        values.push(value);
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+    values.push(req.params.id);
+    db.prepare(`UPDATE coupons SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    const coupon = db.prepare('SELECT * FROM coupons WHERE id = ?').get(req.params.id) as any;
+    res.json({ ...coupon, applicableCourses: coupon.applicableCourses ? JSON.parse(coupon.applicableCourses) : [] });
+  });
+
+  app.post('/api/marketing/coupons/redeem', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { code, leadId, studentId } = req.body;
+    if (!code) return res.status(400).json({ error: 'Missing required fields' });
+
+    const today = new Date().toISOString().split('T')[0];
+    const coupon = db.prepare('SELECT * FROM coupons WHERE code = ?').get(code) as any;
+    if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
+    if (coupon.status !== 'active') return res.status(400).json({ error: 'Coupon not active' });
+    if (coupon.validFrom > today || coupon.validUntil < today) return res.status(400).json({ error: 'Coupon expired' });
+    if (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) return res.status(400).json({ error: 'Coupon usage limit reached' });
+
+    const redemptionId = uuidv4();
+    const redeemedAt = new Date().toISOString();
+
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO coupon_redemptions (id, couponId, code, leadId, studentId, redeemedBy, redeemedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(redemptionId, coupon.id, coupon.code, leadId || null, studentId || null, req.user!.userId, redeemedAt);
+
+      const nextUsedCount = (coupon.usedCount || 0) + 1;
+      const nextStatus = coupon.usageLimit !== null && nextUsedCount >= coupon.usageLimit ? 'used' : coupon.status;
+      db.prepare('UPDATE coupons SET usedCount = ?, status = ? WHERE id = ?').run(nextUsedCount, nextStatus, coupon.id);
+    })();
+
+    const updated = db.prepare('SELECT * FROM coupons WHERE id = ?').get(coupon.id) as any;
+    res.json({
+      redemption: { id: redemptionId, couponId: coupon.id, code: coupon.code, leadId: leadId || null, studentId: studentId || null, redeemedBy: req.user!.userId, redeemedAt },
+      coupon: { ...updated, applicableCourses: updated.applicableCourses ? JSON.parse(updated.applicableCourses) : [] },
+    });
+  });
+
+  app.get('/api/marketing/referrals', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const rows = db.prepare('SELECT * FROM referrals ORDER BY createdAt DESC').all() as any[];
+    res.json(rows.map((r) => ({ ...r, rewardClaimed: !!r.rewardClaimed })));
+  });
+
+  app.post('/api/marketing/referrals', requireAuth, requireRole('admin', 'teacher'), (req: AuthRequest, res) => {
+    const { referrerId, referrerName, referredName, status, rewardType, rewardValue } = req.body;
+    if (!referrerId || !referrerName || !referredName || !status || !rewardType || rewardValue === undefined) return res.status(400).json({ error: 'Missing required fields' });
+    const id = uuidv4();
+    const createdAt = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO referrals (
+        id, referrerId, referrerName, referrerPhone, referredName, referredPhone,
+        status, rewardType, rewardValue, rewardClaimed, leadId, studentId, createdAt, completedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      referrerId,
+      referrerName,
+      req.body.referrerPhone || null,
+      referredName,
+      req.body.referredPhone || null,
+      status,
+      rewardType,
+      rewardValue,
+      req.body.rewardClaimed ? 1 : 0,
+      req.body.leadId || null,
+      req.body.studentId || null,
+      createdAt,
+      req.body.completedAt || null
+    );
+    const row = db.prepare('SELECT * FROM referrals WHERE id = ?').get(id) as any;
+    res.status(201).json({ ...row, rewardClaimed: !!row.rewardClaimed });
+  });
+
+  app.patch('/api/marketing/referrals/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const row = db.prepare('SELECT * FROM referrals WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Not found' });
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    const teacherBlockedFields = new Set(['rewardClaimed', 'status', 'completedAt', 'rewardValue']);
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (!ALLOWED_REFERRAL_FIELDS.includes(key) || value === undefined) continue;
+      if (isTeacher(req) && teacherBlockedFields.has(key)) continue;
+      if (key === 'rewardClaimed') {
+        updates.push(`${key} = ?`);
+        values.push(value ? 1 : 0);
+      } else {
+        updates.push(`${key} = ?`);
+        values.push(value);
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+    values.push(req.params.id);
+    db.prepare(`UPDATE referrals SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    const updated = db.prepare('SELECT * FROM referrals WHERE id = ?').get(req.params.id) as any;
+    res.json({ ...updated, rewardClaimed: !!updated.rewardClaimed });
+  });
+
+  app.post('/api/marketing/referrals/:id/claim', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const row = db.prepare('SELECT * FROM referrals WHERE id = ?').get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const completedAt = new Date().toISOString();
+    db.prepare(`UPDATE referrals SET rewardClaimed = 1, status = 'completed', completedAt = ? WHERE id = ?`).run(completedAt, req.params.id);
+    const updated = db.prepare('SELECT * FROM referrals WHERE id = ?').get(req.params.id) as any;
+    res.json({ ...updated, rewardClaimed: !!updated.rewardClaimed });
   });
 
   // Backup and Restore

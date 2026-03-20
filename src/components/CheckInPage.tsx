@@ -5,7 +5,7 @@ import { useTranslation } from '../i18n';
 import { useStudents, useAppData } from '../contexts/AppContext';
 import { useToast } from './Toast';
 import { format } from 'date-fns';
-import { api } from '../services/api';
+import { api, apiRequest } from '../services/api';
 
 interface AttendanceRecord {
   id: string;
@@ -30,15 +30,14 @@ export default function CheckInPage({ lang }: { lang: Language }) {
 
   useEffect(() => {
     fetchAttendanceRecords();
-  }, []);
+  }, [students]);
 
   const fetchAttendanceRecords = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/attendance');
-      if (response.ok) {
-        setAttendanceRecords(await response.json());
-      }
+      const data = await apiRequest<AttendanceRecord[]>('/api/attendance');
+      const studentIdSet = new Set(students.map((s) => s.id));
+      setAttendanceRecords(data.filter((r) => studentIdSet.has(r.studentId)));
     } catch (error) {
       console.error('Failed to fetch attendance records:', error);
     } finally {

@@ -73,7 +73,7 @@ const defaultTemplates: MessageTemplate[] = [
   }
 ];
 
-export default function EnhancedMessageCenter({ lang }: { lang: Language }) {
+export default function EnhancedMessageCenter({ lang, initialTeacherId }: { lang: Language; initialTeacherId?: string }) {
   const { t } = useTranslation(lang);
   const { showToast } = useToast();
   const { user } = useAuth();
@@ -172,18 +172,46 @@ export default function EnhancedMessageCenter({ lang }: { lang: Language }) {
     return templates;
   }, [templates]);
 
+  const findTeacherByAnyId = (id: string) => {
+    return teachers.find(t => t.id === id || (t as any).userId === id) || null;
+  };
+
+  useEffect(() => {
+    if (!initialTeacherId) return;
+    const directConversation = conversations.find(c => c.participantId === initialTeacherId);
+    if (directConversation) {
+      setSelectedConversation(directConversation.participantId);
+      return;
+    }
+    const teacher = findTeacherByAnyId(initialTeacherId);
+    const teacherUserId = (teacher as any)?.userId;
+    if (teacherUserId) {
+      const byUserIdConversation = conversations.find(c => c.participantId === teacherUserId);
+      if (byUserIdConversation) {
+        setSelectedConversation(byUserIdConversation.participantId);
+        return;
+      }
+      setSelectedConversation(teacherUserId);
+      return;
+    }
+    setSelectedConversation(initialTeacherId);
+  }, [initialTeacherId, conversations, teachers]);
+
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !user || !selectedConversation) return;
     
     const conv = conversations.find(c => c.participantId === selectedConversation);
-    if (!conv) return;
+    const selectedTeacher = findTeacherByAnyId(selectedConversation);
+    const receiverRole = conv?.participantRole || (selectedTeacher ? 'teacher' : null);
+    if (!receiverRole) return;
+    const receiverId = receiverRole === 'teacher' ? ((selectedTeacher as any)?.userId || selectedConversation) : selectedConversation;
     
     try {
       const msg = await api.sendMessage({
         senderId: user.id,
         senderRole: user.role,
-        receiverId: conv.participantId,
-        receiverRole: conv.participantRole as any,
+        receiverId,
+        receiverRole: receiverRole as any,
         content: newMessage.trim()
       });
       setMessages(prev => [...prev, msg]);
@@ -218,6 +246,22 @@ export default function EnhancedMessageCenter({ lang }: { lang: Language }) {
     setShowTemplatePicker(false);
     setSelectedTemplate(template);
   };
+
+  const selectedConversationData = useMemo(() => {
+    if (!selectedConversation) return null;
+    return conversations.find(c => c.participantId === selectedConversation) || null;
+  }, [conversations, selectedConversation]);
+
+  const selectedParticipantName = useMemo(() => {
+    if (!selectedConversation) return '';
+    const teacher = findTeacherByAnyId(selectedConversation);
+    return selectedConversationData?.participantName || teacher?.name || selectedConversation;
+  }, [selectedConversationData, teachers, selectedConversation]);
+
+  const selectedParticipantRole = useMemo(() => {
+    if (!selectedConversation) return '';
+    return selectedConversationData?.participantRole || (findTeacherByAnyId(selectedConversation) ? 'teacher' : 'student');
+  }, [selectedConversationData, teachers, selectedConversation]);
 
   const handleBroadcast = async () => {
     if (!broadcastForm.message.trim()) {
@@ -378,14 +422,14 @@ export default function EnhancedMessageCenter({ lang }: { lang: Language }) {
                 <div className="p-4 border-b border-gray-100 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white font-bold">
-                      {conversations.find(c => c.participantId === selectedConversation)?.participantName.charAt(0)}
+                      {selectedParticipantName.charAt(0)}
                     </div>
                     <div>
                       <p className="font-medium text-gray-900">
-                        {conversations.find(c => c.participantId === selectedConversation)?.participantName}
+                        {selectedParticipantName}
                       </p>
                       <p className="text-xs text-gray-500">
-                        {conversations.find(c => c.participantId === selectedConversation)?.participantRole === 'teacher' 
+                        {selectedParticipantRole === 'teacher' 
                           ? (lang === 'zh' ? '教师' : 'Teacher')
                           : (lang === 'zh' ? '学员/家长' : 'Student/Parent')
                         }
@@ -420,9 +464,9 @@ export default function EnhancedMessageCenter({ lang }: { lang: Language }) {
                 )}
 
                 <div className="flex-1 p-4 overflow-y-auto max-h-[300px]">
-                  {conversations
-                    .find(c => c.participantId === selectedConversation)
-                    ?.messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+                  {(selectedConversationData?.messages || [])
+                    .slice()
+                    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
                     .map(msg => (
                       <div
                         key={msg.id}

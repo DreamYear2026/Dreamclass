@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'parent' | 'teacher';
+export type Role = 'super_admin' | 'admin' | 'parent' | 'teacher';
 export type Language = 'en' | 'zh';
 
 export interface Campus {
@@ -18,6 +18,7 @@ export interface User {
   email?: string;
   phone?: string;
   avatar?: string;
+  permissions?: string[];
 }
 
 export interface Student {
@@ -52,13 +53,17 @@ export interface HoursChangeRecord {
 
 export interface Teacher {
   id: string;
+  userId?: string | null;
+  username?: string;
   name: string;
   phone: string;
   email: string;
   specialization: string;
   avatar?: string;
   status: 'active' | 'inactive';
+  campusId?: string | null;
 }
+
 
 export interface Course {
   id: string;
@@ -71,6 +76,7 @@ export interface Course {
   startTime: string;
   endTime: string;
   status: 'scheduled' | 'completed' | 'cancelled';
+  campusId?: string | null;
   room: string;
 }
 
@@ -127,10 +133,9 @@ export interface SkillHistoryEntry {
 export interface LearningGoal {
   id: string;
   studentId: string;
-  skillName: string;
-  targetLevel: number;
-  currentLevel: number;
-  deadline: string;
+  title: string;
+  description?: string;
+  targetDate?: string;
   status: 'in_progress' | 'completed' | 'overdue';
   createdAt: string;
 }
@@ -206,17 +211,6 @@ export interface StudentProgress {
   updatedAt: string;
 }
 
-export interface LearningGoal {
-  id: string;
-  studentId: string;
-  skillName: string;
-  targetLevel: number;
-  currentLevel: number;
-  deadline: string;
-  status: 'in_progress' | 'completed' | 'overdue';
-  createdAt: string;
-}
-
 export interface PracticeRecord {
   id: string;
   studentId: string;
@@ -244,4 +238,165 @@ export interface Homework {
   rating?: number;
   reviewedAt?: string;
   createdAt: string;
+}
+
+export interface Lead {
+  id: string;
+  name: string;
+  phone: string;
+  source: string;
+  status: 'new' | 'contacted' | 'trial' | 'converted' | 'lost';
+  notes: string;
+  createdAt: string;
+  nextFollowUp?: string;
+  trialDate?: string;
+  studentId?: string;
+  age?: number;
+  email?: string;
+  address?: string;
+  interests?: string[];
+  assignedTo?: string;
+  assignedName?: string;
+  tags?: string[];
+  lastContacted?: string;
+  followUpCount?: number;
+}
+
+export interface MarketingCampaign {
+  id: string;
+  name: string;
+  type: 'discount' | 'referral' | 'promotion' | 'event' | 'seasonal';
+  status: 'draft' | 'active' | 'paused' | 'completed';
+  description: string;
+  startDate: string;
+  endDate: string;
+  targetAudience?: string;
+  budget?: number;
+  conversionGoal?: number;
+  actualConversions?: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  type: 'percentage' | 'fixed' | 'free_trial' | 'free_lesson';
+  value: number;
+  minPurchase?: number;
+  maxDiscount?: number;
+  status: 'active' | 'expired' | 'used' | 'inactive';
+  validFrom: string;
+  validUntil: string;
+  usageLimit?: number;
+  usedCount?: number;
+  applicableCourses?: string[];
+  campaignId?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface Referral {
+  id: string;
+  referrerId: string;
+  referrerName: string;
+  referrerPhone: string;
+  referredName: string;
+  referredPhone: string;
+  status: 'pending' | 'registered' | 'paid' | 'completed';
+  rewardType: 'discount' | 'free_lesson' | 'cash';
+  rewardValue: number;
+  rewardClaimed?: boolean;
+  leadId?: string;
+  studentId?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface FollowUp {
+  id: string;
+  leadId: string;
+  type: 'call' | 'sms' | 'wechat' | 'email' | 'visit';
+  content: string;
+  result: 'scheduled' | 'interested' | 'not_interested' | 'no_answer' | 'call_back';
+  scheduledDate?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface SalesFunnelStage {
+  id: string;
+  name: string;
+  order: number;
+  leadCount: number;
+  conversionRate: number;
+  color: string;
+}
+
+export interface ChannelStats {
+  source: string;
+  leadCount: number;
+  convertedCount: number;
+  conversionRate: number;
+  avgDaysToConvert: number;
+}
+
+export interface SalaryRecord {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  year: number;
+  month: number;
+  baseSalary: number;
+  hourlyRate: number;
+  totalHours: number;
+  hourlySalary: number;
+  performanceBonus: number;
+  attendanceBonus: number;
+  retentionBonus: number;
+  otherBonus: number;
+  totalBonus: number;
+  taxDeduction: number;
+  insuranceDeduction: number;
+  otherDeduction: number;
+  totalDeduction: number;
+  netSalary: number;
+  status: 'draft' | 'confirmed' | 'paid';
+  paidAt?: string;
+  confirmedAt?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SalaryAdjustment {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  adjustmentType: 'base_salary' | 'hourly_rate' | 'bonus';
+  oldValue: number;
+  newValue: number;
+  changeAmount: number;
+  reason: string;
+  effectiveDate: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface TeacherSalaryConfig {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  baseSalary: number;
+  hourlyRate: number;
+  performanceBonusThreshold: number;
+  performanceBonusAmount: number;
+  attendanceBonusAmount: number;
+  retentionBonusRate: number;
+  taxRate: number;
+  insuranceRate: number;
+  effectiveDate: string;
+  createdAt: string;
+  updatedAt: string;
 }

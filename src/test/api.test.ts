@@ -18,12 +18,15 @@ describe('API Service', () => {
       const mockUser = { id: '1', username: 'admin', role: 'admin' };
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve(mockUser),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify(mockUser)),
       });
 
       const result = await api.login('admin', 'password');
 
       expect(mockFetch).toHaveBeenCalledWith('/api/auth/login', {
+        credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', password: 'password' }),
@@ -34,7 +37,9 @@ describe('API Service', () => {
     it('should throw error on failed login', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
-        json: () => Promise.resolve({ error: 'Invalid credentials' }),
+        status: 401,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify({ error: 'Invalid credentials' })),
       });
 
       await expect(api.login('admin', 'wrong')).rejects.toThrow('Invalid credentials');
@@ -49,12 +54,14 @@ describe('API Service', () => {
       ];
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve(mockStudents),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify(mockStudents)),
       });
 
       const result = await api.getStudents();
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/students');
+      expect(mockFetch).toHaveBeenCalledWith('/api/students', { credentials: 'include' });
       expect(result).toEqual(mockStudents);
     });
   });
@@ -66,12 +73,15 @@ describe('API Service', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve(mockResponse),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify(mockResponse)),
       });
 
       const result = await api.addStudent(newStudent);
 
       expect(mockFetch).toHaveBeenCalledWith('/api/students', {
+        credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newStudent),
@@ -84,12 +94,15 @@ describe('API Service', () => {
     it('should update a student', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({}),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify({})),
       });
 
       await api.updateStudent('1', { name: '张三更新' });
 
       expect(mockFetch).toHaveBeenCalledWith('/api/students/1', {
+        credentials: 'include',
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: '张三更新' }),
@@ -101,12 +114,15 @@ describe('API Service', () => {
     it('should delete a student', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({}),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify({})),
       });
 
       await api.deleteStudent('1');
 
       expect(mockFetch).toHaveBeenCalledWith('/api/students/1', {
+        credentials: 'include',
         method: 'DELETE',
       });
     });
@@ -119,12 +135,14 @@ describe('API Service', () => {
       ];
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve(mockCourses),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify(mockCourses)),
       });
 
       const result = await api.getCourses();
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/courses');
+      expect(mockFetch).toHaveBeenCalledWith('/api/courses', { credentials: 'include' });
       expect(result).toEqual(mockCourses);
     });
   });
@@ -140,12 +158,15 @@ describe('API Service', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({}),
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify({})),
       });
 
       await api.markAttendance(attendanceData);
 
       expect(mockFetch).toHaveBeenCalledWith('/api/attendance', {
+        credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(attendanceData),
@@ -158,7 +179,8 @@ describe('API Service', () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 500,
-        json: () => Promise.resolve({ error: 'Internal Server Error' }),
+        headers: { get: () => 'application/json' },
+        text: () => Promise.resolve(JSON.stringify({ error: 'Internal Server Error' })),
       });
 
       await expect(api.getStudents()).rejects.toThrow('Internal Server Error');

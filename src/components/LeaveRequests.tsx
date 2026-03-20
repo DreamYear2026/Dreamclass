@@ -5,7 +5,7 @@ import { useTranslation } from '../i18n';
 import { useAuth } from '../contexts/AuthContext';
 import { useCourses, useStudents } from '../contexts/AppContext';
 import { useStudentByUser } from '../hooks/useStudentByUser';
-import { api } from '../services/api';
+import { apiRequest } from '../services/api';
 import { useToast } from './Toast';
 import { parseISO, format, isAfter, isToday } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -36,11 +36,8 @@ export default function LeaveRequests({ lang }: { lang: Language }) {
   const fetchLeaveRequests = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/leave-requests', { credentials: 'include' });
-      if (response.ok) {
-        const data = await response.json();
-        setLeaveRequests(data);
-      }
+      const data = await apiRequest<LeaveRequest[]>('/api/leave-requests');
+      setLeaveRequests(data);
     } catch (error) {
       console.error('Failed to fetch leave requests:', error);
     } finally {
@@ -94,10 +91,9 @@ export default function LeaveRequests({ lang }: { lang: Language }) {
     }
 
     try {
-      const response = await fetch('/api/leave-requests', {
+      await apiRequest<LeaveRequest>('/api/leave-requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           courseId: selectedCourse.id,
           studentId: selectedCourse.studentId,
@@ -109,15 +105,11 @@ export default function LeaveRequests({ lang }: { lang: Language }) {
         }),
       });
 
-      if (response.ok) {
-        showToast(lang === 'zh' ? '申请已提交' : 'Request submitted', 'success');
-        setShowForm(false);
-        setSelectedCourse(null);
-        setFormData({ type: 'leave', reason: '', preferredDate: '', preferredTime: '' });
-        fetchLeaveRequests();
-      } else {
-        showToast(lang === 'zh' ? '提交失败' : 'Failed to submit', 'error');
-      }
+      showToast(lang === 'zh' ? '申请已提交' : 'Request submitted', 'success');
+      setShowForm(false);
+      setSelectedCourse(null);
+      setFormData({ type: 'leave', reason: '', preferredDate: '', preferredTime: '' });
+      fetchLeaveRequests();
     } catch (error) {
       showToast(lang === 'zh' ? '提交失败' : 'Failed to submit', 'error');
     }
@@ -125,17 +117,14 @@ export default function LeaveRequests({ lang }: { lang: Language }) {
 
   const handleProcess = async (id: string, status: 'approved' | 'rejected', response?: string) => {
     try {
-      const res = await fetch(`/api/leave-requests/${id}`, {
+      await apiRequest<LeaveRequest>(`/api/leave-requests/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ status, response }),
       });
 
-      if (res.ok) {
-        showToast(lang === 'zh' ? '已处理' : 'Processed', 'success');
-        fetchLeaveRequests();
-      }
+      showToast(lang === 'zh' ? '已处理' : 'Processed', 'success');
+      fetchLeaveRequests();
     } catch (error) {
       showToast(lang === 'zh' ? '处理失败' : 'Failed to process', 'error');
     }
